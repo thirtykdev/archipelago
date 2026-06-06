@@ -8,7 +8,7 @@
 
 ## What This Is
 
-Building automation systems have been islands and silos for decades (many by design). Proprietary protocols, vendor-locked platforms, and closed data formats have kept building intelligence locked inside systems that were never designed to share. Getting data out - let alone acting on it - requires expensive middleware, platform licenses, or accepting that your building just won’t talk to anything outside its own ecosystem.
+Building automation systems have been islands and silos for decades (often by design). Proprietary protocols, vendor-locked platforms, and closed data formats have kept building intelligence locked inside systems that were never designed to share. Getting data out - let alone acting on it - requires expensive middleware, platform licenses, or accepting that your building just won’t talk to anything outside its own ecosystem.
 
 Archipelago is an attempt to change that.
 
