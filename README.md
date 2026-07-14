@@ -1,4 +1,6 @@
-# Archipelago
+<p align="center">
+  <img src="assets/logo-animated.svg" width="180" alt="Archipelago">
+</p># Archipelago
 
 **A project turned thought experiment..**
 
