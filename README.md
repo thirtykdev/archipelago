@@ -4,7 +4,7 @@
 
 # Archipelago
 
-**A project turned thought experiment..**
+**A project turned thought experiment.. turned back to project again**
 
 [archipelago-project.org](https://archipelago-project.org)  ·  Licensed under AGPL v3
 
