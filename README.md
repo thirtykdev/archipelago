@@ -12,7 +12,7 @@ The building automation industry is weird. I honestly can't think of a better wa
 
 ## What is the Archipelago project? 
 
-What once started as a grand idea has evovled into a set of much smaller complimentary ideas.. check back soon for more info and new repos. 
+What once started as a grand idea has evolved into a set of much smaller, complementary ideas.. check back soon for more info and new repos. 
 
 ## License
 
