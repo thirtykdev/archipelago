@@ -8,17 +8,11 @@
 
 ## The Truth
 
-The building automation industry is weird. I honestly can't think of a better way to say it. Labor is treated like a commodity and low bid still gets the job almost every time.
+The building automation industry is weird. I honestly can't think of a better way to say it. We can dig deeper into that another time.
 
-Even when you work at a company that seems different than the status quo, it's largely talk with zero follow-through. 
+## What is the Archipelago project? 
 
-At the highest level of BAS work, it's much closer to software development than construction - and as such, there is very little room to make change or build better things. Graphics, programming, system-level architecture, alarm philosophy, data integrity -these things cannot be done on construction timelines driven by PMs and GCs who have zero clue what we do.
-
-If you really sit down and think about this, it's no wonder the industry is so far behind and so slow to change.
-
-My prediction is that this gap will continue to grow - as "AI" continues to consume everything, it will further abstract this work from the people doing it.
-
-A huge percentage of today's BAS techs are in way over their heads already... I don't see a way the industry ever gets better.
+What once started as a grand idea has evovled into a set of much smaller complimentary ideas.. check back soon for more info and new repos. 
 
 ## License
 
