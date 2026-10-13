@@ -22,5 +22,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
-      - name: Tests with the network turned off
-        run: npm run test:offline
+      - name: Tests with the network turned off (container with no network)
+        # Unprivileged user namespaces are restricted on the hosted runner, so the suite runs in a
+        # container that has no network interface but loopback. Any socket attempt fails the job.
+        run: docker run --rm --network none -v "$PWD:/w" -w /w node:22 npm test

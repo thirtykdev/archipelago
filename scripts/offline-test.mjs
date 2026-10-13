@@ -9,8 +9,17 @@ if (platform() === 'linux') {
     const r = spawnSync('unshare', ['-rn', '--', npm, 'test'], { stdio: 'inherit' });
     process.exit(r.status ?? 1);
   }
-  console.warn('offline-test: unshare -rn unavailable here; falling back to the in-process tripwire');
-} else {
+  console.warn('offline-test: unshare -rn unavailable here');
+}
+{
+  const d = spawnSync('docker', ['version'], { stdio: 'ignore' });
+  if (d.status === 0) {
+    console.log('offline-test: running in a container with --network none');
+    const r = spawnSync('docker', ['run', '--rm', '--network', 'none', '-v', `${process.cwd()}:/w`, '-w', '/w', 'node:22', 'npm', 'test'], { stdio: 'inherit' });
+    process.exit(r.status ?? 1);
+  }
+}
+if (platform() !== 'linux') {
   console.warn(`offline-test: no network namespace on ${platform()}; running with the in-process tripwire only`);
 }
 const r = spawnSync(npm, ['test'], { stdio: 'inherit', env: { ...process.env, ARCHIPELAGO_TRIPWIRE: 'strict' } });
