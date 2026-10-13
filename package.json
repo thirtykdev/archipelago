@@ -1,0 +1,25 @@
+{
+  "name": "archipelago",
+  "private": true,
+  "version": "0.0.0",
+  "description": "An open-source, vendor-neutral building automation platform. The building has already been engineered. Why are we engineering it again?",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "workspaces": ["packages/*", "importers/*", "apps/*"],
+  "scripts": {
+    "test": "vitest run",
+    "test:offline": "node scripts/offline-test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "check:fixtures": "node scripts/check-fixtures.mjs",
+    "check": "npm run typecheck && npm run check:boundaries && npm run check:fixtures && npm test",
+    "archipelago": "tsx apps/cli/src/main.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
