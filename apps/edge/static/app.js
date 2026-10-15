@@ -3,7 +3,11 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const refKey = (ref) => Object.keys(ref).filter((k) => k !== 'connector').sort().map((k) => `${k}=${ref[k]}`).join('|');
-const state = { model: null, view: 'overview', selectedDevice: null, filter: '', simulate: false, changed: new Set(), showAnswered: false, diffFrom: null, diffTo: null, by: (() => { try { return localStorage.getItem('atoll-by') || ''; } catch { return ''; } })() };
+const state = { model: null, view: 'overview', selectedDevice: null, filter: '', simulate: false, changed: new Set(), showAnswered: false, diffFrom: null, diffTo: null, me: null, user: (() => { try { return localStorage.getItem('atoll-user') || 'admin'; } catch { return 'admin'; } })() };
+// Every request names the acting principal. Preview identity; the first release replaces this header with a session.
+const _fetch = window.fetch.bind(window);
+window.fetch = (input, init = {}) => _fetch(input, { ...init, headers: { ...(init.headers || {}), 'x-atoll-user': state.user } });
+const may = (cap) => !!state.me?.capabilities?.includes(cap);
 
 // ---- theme ----
 try { const t = localStorage.getItem('atoll-theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch {}
@@ -36,7 +40,9 @@ let toastTimer;
 function toast(msg, err = false) { let t = $('.toast'); if (!t) { t = document.createElement('div'); t.className = 'toast'; document.body.appendChild(t); } t.textContent = msg; t.classList.toggle('err', err); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.remove(), err ? 6000 : 2500); }
 
 // ---- data ----
-async function load() { state.model = await (await fetch('/api/model')).json(); render(); }
+async function loadMe() { state.me = await (await fetch('/api/me')).json(); const sel = $('[data-user]'); sel.innerHTML = state.me.users.map((u) => `<option value="${esc(u.id)}" ${u.id === state.user ? 'selected' : ''}>${esc(u.name)}</option>`).join(''); $('[data-caps]').textContent = state.me.capabilities.join(' · ') || 'no capabilities'; $$('[data-needs]').forEach((el) => el.toggleAttribute('data-denied', !may(el.dataset.needs))); }
+async function load() { await loadMe(); const r = await fetch('/api/model'); if (r.status === 403) { state.model = null; const err = (await r.json()).error; $$('[data-view]').forEach((v) => { if (!v.hidden) v.innerHTML = `<div class="panel"><div class="empty"><b>No access</b>${esc(err)}</div></div>`; }); return; } state.model = await r.json(); render(); }
+$('[data-user]').addEventListener('change', (e) => { state.user = e.target.value; try { localStorage.setItem('atoll-user', state.user); } catch {} load(); });
 const es = new EventSource('/api/events');
 es.addEventListener('hello', (e) => { state.simulate = JSON.parse(e.data).simulate; renderConn(); });
 es.addEventListener('model', () => load());
@@ -63,7 +69,7 @@ function render() {
   const open = m.questions.filter((q) => !q.answered); const qc = $('[data-qcount]'); qc.textContent = open.length; qc.toggleAttribute('data-zero', !open.length);
   $('[data-status]').textContent = `${m.artifacts.length} artifact${m.artifacts.length === 1 ? '' : 's'} · ${m.model.entities} entities · ${m.model.assertions} facts (${m.model.superseded} superseded) · ${m.snapshots.length} snapshots · ${Object.keys(m.readings).length} live values · ${m.atoll.storage}`;
   renderConn();
-  ({ overview, devices, points, controllers, questions, changes, artifacts })[state.view]?.();
+  ({ overview, devices, points, controllers, questions, changes, documents, artifacts })[state.view]?.();
 
   function overview() {
     const v = $('[data-view="overview"]');
@@ -144,12 +150,11 @@ function render() {
     const v = $('[data-view="questions"]');
     const list = state.showAnswered ? m.questions : m.questions.filter((q) => !q.answered);
     v.innerHTML = `<div class="panel"><div class="panel-head"><div><h3>Questions · ${open.length} open <span class="muted">· ${m.questions.length - open.length} answered</span></h3><span class="muted">What Atoll could not establish from the files. It asks; it does not invent. An answer is a confirmed fact that supersedes the inference and is kept with your name and the time.</span></div>
-      <div class="filter"><label class="muted">answering as</label><input type="text" placeholder="your name" value="${esc(state.by)}" data-by /><label class="muted"><input type="checkbox" data-show-answered ${state.showAnswered ? 'checked' : ''}/> show answered</label></div></div></div>
+      <div class="filter"><span class="muted">answering as <b>${esc(state.me?.principal?.name ?? '')}</b></span><label class="muted"><input type="checkbox" data-show-answered ${state.showAnswered ? 'checked' : ''}/> show answered</label></div></div></div>
       ${list.map((q) => `<div class="q ${q.answered ? 'q-done' : ''}"><div class="who">${esc(q.kind)} · ${esc(q.subject)}</div><div>${esc(q.text)}</div><div class="ev">${q.evidence.map(esc).join('\n')}</div>
-        ${q.answered ? `<div class="ans"><span class="prov prov-confirmed">confirmed</span> <b>${esc(q.answered.answer)}</b> <span class="muted mono">· ${esc(q.answered.by)} · ${esc(q.answered.at.slice(0, 19).replace('T', ' '))}</span></div>` : `<div class="ans">${q.options.map((o) => `<button type="button" class="btn btn-sm" data-answer="${esc(q.id)}" data-option="${esc(o)}">${esc(o)}</button>`).join('')}</div>`}</div>`).join('') || `<div class="panel"><div class="empty"><b>No open questions</b>Everything imported so far was understood, or nothing is imported yet.</div></div>`}`;
-    $('[data-by]', v).addEventListener('change', (e) => { state.by = e.target.value; try { localStorage.setItem('atoll-by', state.by); } catch {} });
+        ${q.answered ? `<div class="ans"><span class="prov prov-confirmed">confirmed</span> <b>${esc(q.answered.answer)}</b> <span class="muted mono">· ${esc(q.answered.by)} · ${esc(q.answered.at.slice(0, 19).replace('T', ' '))}</span></div>` : (may('questions.answer') ? `<div class="ans">${q.options.map((o) => `<button type="button" class="btn btn-sm" data-answer="${esc(q.id)}" data-option="${esc(o)}">${esc(o)}</button>`).join('')}</div>` : `<div class="ans muted">answering needs the questions.answer capability${q.target ? ' on ' + esc(q.target) : ''}</div>`)}</div>`).join('') || `<div class="panel"><div class="empty"><b>No open questions</b>Everything imported so far was understood, or nothing is imported yet.</div></div>`}`;
     $('[data-show-answered]', v).addEventListener('change', (e) => { state.showAnswered = e.target.checked; questions(); });
-    $$('[data-answer]', v).forEach((b) => b.addEventListener('click', async () => { state.by = $('[data-by]', v).value || state.by; const r = await fetch(`/api/questions/${encodeURIComponent(b.dataset.answer)}/answer`, { method: 'POST', body: JSON.stringify({ answer: b.dataset.option, by: state.by || 'technician' }) }); const j = await r.json(); if (!r.ok) toast(j.error, true); else toast(`Recorded: ${j.question.answered.answer}`); }));
+    $$('[data-answer]', v).forEach((b) => b.addEventListener('click', async () => { const r = await fetch(`/api/questions/${encodeURIComponent(b.dataset.answer)}/answer`, { method: 'POST', body: JSON.stringify({ answer: b.dataset.option }) }); const j = await r.json(); if (!r.ok) toast(j.error, true); else toast(`Recorded: ${j.question.answered.answer}`); }));
   }
 
   function changes() {
@@ -176,6 +181,18 @@ function render() {
     }
   }
 
+  function documents() {
+    const v = $('[data-view="documents"]');
+    const docs = m.documents ?? [];
+    const targets = [{ id: '', name: 'the site (unattached)' }, ...(s ? s.devices.map((d) => ({ id: `${s.stationName}|h:${s.handles[d.path] ?? ''}`, name: d.name })) : [])];
+    v.innerHTML = `<div class="panel"><div class="panel-head"><div><h3>Drawings and submittals · ${docs.length}</h3><span class="muted">Floor plans, mechanical sheets, submittals, photos. Recognised by content (PDF, PNG, JPEG, SVG, DXF, DWG), kept encrypted with the other artifacts, served only to someone who may read this site, never by a public link. Attach one to a device so it travels with the equipment.</span></div></div>
+      <div class="table-wrap"><table><thead><tr><th>Document</th><th>Type</th><th class="num">Bytes</th><th>Kind</th><th>Attached to</th><th>By</th><th></th></tr></thead><tbody>
+      ${docs.map((d) => `<tr class="doc-row"><td><b>${esc(d.name)}</b></td><td class="mono">${esc(d.mime)}</td><td class="num">${d.size.toLocaleString()}</td><td>${may('facts.confirm') ? `<select data-kind="${esc(d.sha256)}">${['drawing', 'mechanical', 'electrical', 'floor plan', 'submittal', 'sequence', 'photo', 'other'].map((k) => `<option ${k === d.kind ? 'selected' : ''}>${k}</option>`).join('')}</select>` : esc(d.kind)}</td><td>${may('facts.confirm') ? `<select data-attach="${esc(d.sha256)}">${targets.map((t) => `<option value="${esc(t.id)}" ${t.id === (d.attachedTo ?? '') ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : esc(d.attachedToName ?? 'the site')}</td><td>${d.by ? prov('confirmed', d.by) + ' ' + esc(d.by) : prov('imported', d.importedAt)}</td><td><a href="/api/documents/${esc(d.sha256)}" target="_blank" rel="noopener">open</a></td></tr>`).join('') || `<tr><td colspan="7" class="empty">No drawings yet. Drop a PDF or an image on the page.</td></tr>`}
+      </tbody></table></div></div>`;
+    const save = async (sha) => { const kind = $(`[data-kind="${CSS.escape(sha)}"]`, v)?.value; const entity = $(`[data-attach="${CSS.escape(sha)}"]`, v)?.value || null; const r = await fetch(`/api/documents/${sha}/attach`, { method: 'POST', body: JSON.stringify({ entity, kind }) }); const j = await r.json(); if (!r.ok) toast(j.error, true); else toast(`Attached ${j.document.name} to ${j.document.attachedToName ?? 'the site'}`); };
+    $$('[data-kind], [data-attach]', v).forEach((el) => el.addEventListener('change', () => save(el.dataset.kind ?? el.dataset.attach)));
+  }
+
   function artifacts() {
     const v = $('[data-view="artifacts"]');
     v.innerHTML = `<div class="panel"><div class="panel-head"><h3>Artifacts · ${m.artifacts.length}</h3><span class="muted mono">in memory · never written to disk</span></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Format</th><th class="num">Bytes</th><th class="mono">SHA-256</th><th>Imported</th></tr></thead><tbody>
@@ -189,3 +206,4 @@ function render() {
 
 nav(location.hash.slice(1) || 'overview');
 load();
+fetch('/api/me').catch(() => {});

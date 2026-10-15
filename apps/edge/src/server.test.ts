@@ -38,8 +38,8 @@ describe('edge persistence and answers', () => {
     let m = await (await fetch(base + '/api/model')).json();
     expect(m.snapshots.length).toBe(2);
     const q = m.questions.find((x: any) => x.kind === 'missing-points');
-    const ans = await (await fetch(base + `/api/questions/${encodeURIComponent(q.id)}/answer`, { method: 'POST', body: JSON.stringify({ answer: q.options[0], by: 'kyle' }) })).json();
-    expect(ans.question.answered).toMatchObject({ answer: 'Read them directly from the controller', by: 'kyle' });
+    const ans = await (await fetch(base + `/api/questions/${encodeURIComponent(q.id)}/answer`, { method: 'POST', body: JSON.stringify({ answer: q.options[0] }) })).json();
+    expect(ans.question.answered).toMatchObject({ answer: 'Read them directly from the controller', by: 'Site administrator' });
     await up('site.dist', dist(stationXml({ devices: 3, pointsPerDevice: 6 })));   // the station grew by a device
     m = await (await fetch(base + '/api/model')).json();
     expect(m.diff.added.some((e: any) => e.kind === 'device' && e.name === 'VAV_03')).toBe(true);
@@ -48,7 +48,59 @@ describe('edge persistence and answers', () => {
     m = await (await fetch(base + '/api/model')).json();
     expect(m.atoll.replayedEvents).toBeGreaterThan(10);
     expect(m.station.devices.length).toBe(3);
-    expect(m.questions.find((x: any) => x.kind === 'missing-points').answered.by).toBe('kyle');
+    expect(m.questions.find((x: any) => x.kind === 'missing-points').answered.by).toBe('Site administrator');
+    await edge.close();
+  });
+});
+
+describe('permissions', () => {
+  it('a viewer can read but not answer, a scoped operator can answer only inside the scope, an admin can grant', async () => {
+    const edge = createEdge({ port: 0 }); const { port } = await edge.listen(); const base = `http://127.0.0.1:${port}`;
+    const as = (user: string) => ({ 'x-atoll-user': user });
+    const up = async (name: string, bytes: Uint8Array, user = 'admin') => (await fetch(base + '/api/import', { method: 'POST', headers: { 'x-filename': name, ...as(user) }, body: new Blob([bytes as unknown as BlobPart]) }));
+    expect((await up('site.dist', dist(stationXml({ devices: 2, pointsPerDevice: 6 })), 'viewer')).status).toBe(403);
+    expect((await up('site.dist', dist(stationXml({ devices: 2, pointsPerDevice: 6 })))).status).toBe(200);
+    expect((await up('VAV_01.caf', caf(), 'tech')).status).toBe(200);
+    const me = await (await fetch(base + '/api/me', { headers: as('viewer') })).json();
+    expect(me.capabilities).toEqual(['model.read']);
+    const m = await (await fetch(base + '/api/model', { headers: as('viewer') })).json();
+    const q = m.questions.find((x: any) => x.kind === 'missing-points');          // target: /Drivers/BacnetNetwork/VAV_01
+    const answer = (user: string) => fetch(base + `/api/questions/${encodeURIComponent(q.id)}/answer`, { method: 'POST', headers: as(user), body: JSON.stringify({ answer: q.options[0] }) });
+    expect((await answer('viewer')).status).toBe(403);
+    const r = await answer('ops-b'); expect(r.status).toBe(200); expect((await r.json()).question.answered.by).toBe('Night operator (BacnetNetwork only)');
+    expect((await fetch(base + '/api/reset', { method: 'POST', headers: as('tech') })).status).toBe(403);
+    expect((await fetch(base + '/api/users', { method: 'POST', headers: as('tech'), body: JSON.stringify({ id: 'x', name: 'x', grants: [] }) })).status).toBe(403);
+    const g = await fetch(base + '/api/users', { method: 'POST', headers: as('admin'), body: JSON.stringify({ id: 'eng', name: 'Engineer', grants: [{ role: 'engineer', scope: '/' }] }) });
+    expect(g.status).toBe(200);
+    expect((await (await fetch(base + '/api/me', { headers: as('eng') })).json()).capabilities).toContain('config.connectors');
+    expect((await fetch(base + '/api/model', { headers: as('nobody') })).status).toBe(200); // unknown caller in the open preview is the admin
+    await edge.close();
+    const closed = createEdge({ port: 0, openPreview: false }); const c = await closed.listen();
+    expect((await fetch(`http://127.0.0.1:${c.port}/api/model`, { headers: as('nobody') })).status).toBe(403);
+    await closed.close();
+  });
+});
+
+describe('drawings and submittals', () => {
+  it('accepts a PDF by content, serves it only to a reader, and attaches it to equipment as a confirmed fact', async () => {
+    const edge = createEdge({ port: 0 }); const { port } = await edge.listen(); const base = `http://127.0.0.1:${port}`;
+    const as = (user: string) => ({ 'x-atoll-user': user });
+    const pdf = new TextEncoder().encode('%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n');
+    const up = async (name: string, bytes: Uint8Array, user = 'admin') => (await fetch(base + '/api/import', { method: 'POST', headers: { 'x-filename': name, ...as(user) }, body: new Blob([bytes as unknown as BlobPart]) })).json();
+    await up('site.dist', dist(stationXml({ devices: 1, pointsPerDevice: 2 })));
+    const r = await up('Level 5 mechanical.pdf', pdf); expect(r.artifact).toMatchObject({ kind: 'document', format: 'pdf' });
+    const fake = await up('submittal.pdf', new TextEncoder().encode('not a pdf at all')); expect(fake.error).toMatch(/Refused/);
+    const m = await (await fetch(base + '/api/model')).json();
+    expect(m.documents[0]).toMatchObject({ name: 'Level 5 mechanical.pdf', mime: 'application/pdf', attachedTo: null });
+    const get = await fetch(base + `/api/documents/${r.artifact.sha256}`, { headers: as('viewer') });
+    expect(get.status).toBe(200); expect(get.headers.get('content-type')).toBe('application/pdf'); expect(get.headers.get('cache-control')).toBe('no-store');
+    const closed = createEdge({ port: 0, openPreview: false }); const c = await closed.listen();
+    expect((await fetch(`http://127.0.0.1:${c.port}/api/documents/${r.artifact.sha256}`)).status).toBe(403); await closed.close();
+    const dev = m.station.devices[0]; const devId = `${m.station.stationName}|h:${m.station.handles[dev.path]}`;
+    const attach = await fetch(base + `/api/documents/${r.artifact.sha256}/attach`, { method: 'POST', headers: as('viewer'), body: JSON.stringify({ entity: devId, kind: 'mechanical' }) });
+    expect(attach.status).toBe(403);
+    const ok = await (await fetch(base + `/api/documents/${r.artifact.sha256}/attach`, { method: 'POST', headers: as('tech'), body: JSON.stringify({ entity: devId, kind: 'mechanical' }) })).json();
+    expect(ok.document).toMatchObject({ kind: 'mechanical', by: 'Technician', attachedTo: devId, attachedToName: 'VAV_01' });
     await edge.close();
   });
 });

@@ -11,7 +11,7 @@ export type Provenance =
   | { kind: 'confirmed'; by: string; at: Iso8601; supersedes?: string }
   | { kind: 'rejected'; by: string; at: Iso8601; supersedes: string };
 
-export type EntityKind = 'site' | 'building' | 'floor' | 'space' | 'zone' | 'equipment' | 'point' | 'device' | 'network' | 'program' | 'extension';
+export type EntityKind = 'site' | 'building' | 'floor' | 'space' | 'zone' | 'equipment' | 'point' | 'device' | 'network' | 'program' | 'extension' | 'document';
 
 export type PointKind = 'numeric' | 'boolean' | 'enum' | 'string';
 
@@ -97,3 +97,4 @@ export function correlate<A extends Describable, B extends Describable>(as: A[],
 }
 
 export { Model, type Entity, type Snapshot, type Change, type Diff, type ModelEvent } from './model.ts';
+export { can, require as requireCapability, capabilitiesAt, Forbidden, ROLE_CAPABILITIES, ALL_CAPABILITIES, ANONYMOUS, type Capability, type Role, type Grant, type Principal } from './authz.ts';

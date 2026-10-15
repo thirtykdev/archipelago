@@ -4,9 +4,10 @@ import { inspect, applyStation, type InspectReport } from '@archipelago/importer
 import { parseControllerFile, type ControllerFile } from '@archipelago/importer-controller-file';
 import { listZip, sniff, Refused } from '@archipelago/importer-station-file';
 
-export interface Artifact { name: string; sha256: string; size: number; format: string; importedAt: string; kind: 'station' | 'controller' }
+export interface Artifact { name: string; sha256: string; size: number; format: string; importedAt: string; kind: 'station' | 'controller' | 'document' }
+export interface Document { sha256: string; name: string; mime: string; size: number; importedAt: string; kind: string; attachedTo: string | null; attachedToName?: string; by?: string }
 export interface ControllerEntry { artifact: Artifact; file: ControllerFile; matchedDevice?: string; correlation: { matched: number; onlyController: Array<{ name: string; ref: NativeRef; kind: string; writable: boolean; exposed: boolean }>; onlyStation: Array<{ name: string; path: string }>; matchedPairs: Array<{ controller: string; station: string; path: string }> } }
-export interface Question { id: string; subject: string; text: string; evidence: string[]; kind: 'unmatched-controller' | 'missing-points' | 'no-instance' | 'unknown-types' | 'warning'; options: string[]; answered?: { answer: string; by: string; at: string } }
+export interface Question { id: string; subject: string; text: string; evidence: string[]; kind: 'unmatched-controller' | 'missing-points' | 'no-instance' | 'unknown-types' | 'warning'; options: string[]; /** entity path the question is about, for scoped permissions */ target?: string; answered?: { answer: string; by: string; at: string } }
 
 export class EdgeModel {
   readonly model = new Model();
@@ -14,12 +15,47 @@ export class EdgeModel {
   station: InspectReport | undefined;
   controllers: ControllerEntry[] = [];
   readings = new Map<string, Reading>();
+  /** document bytes when running without a store (preview, in memory) */
+  documentBytes = new Map<string, Uint8Array>();
 
-  classify(bytes: Uint8Array): 'station' | 'controller' {
+  /** Drawings, submittals, sheets: recognised by content, kept as artifacts, attachable to entities. */
+  static documentType(bytes: Uint8Array, name: string): { mime: string; format: string } | undefined {
+    const head = (n: number) => new TextDecoder('latin1').decode(bytes.subarray(0, n));
+    if (head(5) === '%PDF-') return { mime: 'application/pdf', format: 'pdf' };
+    if (bytes[0] === 0x89 && head(4).slice(1) === 'PNG') return { mime: 'image/png', format: 'png' };
+    if (bytes[0] === 0xff && bytes[1] === 0xd8) return { mime: 'image/jpeg', format: 'jpeg' };
+    if (head(4) === 'AC10') return { mime: 'application/acad', format: 'dwg' };
+    if (/^\s*0\s*\r?\n\s*SECTION/.test(head(64))) return { mime: 'application/dxf', format: 'dxf' };
+    if (/<svg[\s>]/.test(head(2048))) return { mime: 'image/svg+xml', format: 'svg' };
+    if (/\.(pdf|png|jpe?g|dwg|dxf|svg)$/i.test(name)) return undefined; // claimed by extension but the bytes disagree: refuse below
+    return undefined;
+  }
+
+  get documents(): Document[] {
+    return this.model.live('document').map((e) => {
+      const attachedTo = this.model.value<string | null>(e.id, 'attachedTo') ?? null;
+      const cur = this.model.currentAssertion(e.id, 'attachedTo');
+      const d: Document = { sha256: e.id.slice('document|'.length), name: e.name, mime: this.model.value<string>(e.id, 'mime') ?? 'application/octet-stream', size: this.model.value<number>(e.id, 'size') ?? 0, importedAt: this.model.value<string>(e.id, 'importedAt') ?? '', kind: this.model.value<string>(e.id, 'documentKind') ?? 'drawing', attachedTo };
+      const name = attachedTo ? this.model.entities.get(attachedTo)?.name : undefined; if (name) d.attachedToName = name;
+      if (cur?.provenance.kind === 'confirmed') d.by = cur.provenance.by;
+      return d;
+    });
+  }
+  attachDocument(sha256: string, entity: string | null, kind: string, by: string): Document | undefined {
+    const id = `document|${sha256}`; if (!this.model.entities.has(id)) return undefined;
+    if (entity && !this.model.entities.has(entity)) return undefined;
+    const prov: Provenance = { kind: 'confirmed', by, at: new Date().toISOString() };
+    this.model.assert(id, 'attachedTo', entity, prov); this.model.assert(id, 'documentKind', kind, prov);
+    this.model.snapshot(`attach ${this.model.entities.get(id)!.name}`, this.artifacts.map((x) => x.sha256));
+    return this.documents.find((d) => d.sha256 === sha256);
+  }
+
+  classify(bytes: Uint8Array, name = ''): 'station' | 'controller' | 'document' {
+    if (EdgeModel.documentType(bytes, name)) return 'document';
     const c = sniff(bytes);
     if (c === 'gzip') return 'station';
     if (c === 'xml') { const head = new TextDecoder().decode(bytes.subarray(0, 4096)); return /<bajaObjectGraph/.test(head) ? 'station' : 'controller'; }
-    if (c !== 'zip') throw new Refused('unrecognised file: not a zip, gzip or XML document');
+    if (c !== 'zip') throw new Refused('unrecognised file: not a station file, a controller file, a PDF, an image, a DXF or a DWG');
     const names = listZip(bytes).map((e) => e.name.toLowerCase());
     if (names.some((n) => n === 'file.xml' || /(^|\/)stations\/[^/]+\/config\.bog$/.test(n))) return 'station';
     if (names.some((n) => n === 'config/ip/logicaltree.json' || n.endsWith('.caf.xml'))) return 'controller';
@@ -28,8 +64,18 @@ export class EdgeModel {
   }
 
   import(name: string, bytes: Uint8Array): Artifact {
-    const kind = this.classify(bytes);
+    const kind = this.classify(bytes, name);
     const base = { name, sha256: sha256(bytes), size: bytes.length, importedAt: new Date().toISOString(), kind };
+    if (kind === 'document') {
+      const t = EdgeModel.documentType(bytes, name)!; const a = { ...base, format: t.format };
+      const id = `document|${a.sha256}`; const imp = (locator: string): Provenance => ({ kind: 'imported', artifact: a.sha256, locator });
+      this.model.addEntity({ id, kind: 'document', name, path: `/documents/${name}` });
+      this.model.assert(id, 'mime', t.mime, imp(name)); this.model.assert(id, 'size', bytes.length, imp(name)); this.model.assert(id, 'importedAt', a.importedAt, imp(name));
+      if (!this.model.currentAssertion(id, 'attachedTo')) this.model.assert(id, 'attachedTo', null, imp(name));
+      this.artifacts = this.artifacts.filter((x) => x.sha256 !== a.sha256); this.artifacts.push(a);
+      this.model.snapshot(`import ${name}`, this.artifacts.map((x) => x.sha256));
+      return a;
+    }
     if (kind === 'station') { const r = inspect(bytes); this.station = r; const a = { ...base, format: r.artifact.format }; this.artifacts = this.artifacts.filter((x) => x.kind !== 'station'); this.artifacts.push(a); applyStation(this.model, r, new Map(Object.entries(r.handles))); this.recorrelate(); this.model.snapshot(`import ${name}`, this.artifacts.map((x) => x.sha256)); return a; }
     const f = parseControllerFile(bytes);
     const a = { ...base, format: f.format };
@@ -44,7 +90,7 @@ export class EdgeModel {
     return a;
   }
 
-  reset() { this.artifacts = []; this.station = undefined; this.controllers = []; this.readings.clear(); for (const e of this.model.live()) this.model.retire(e.id); }
+  reset() { this.artifacts = []; this.station = undefined; this.controllers = []; this.readings.clear(); this.documentBytes.clear(); for (const e of this.model.live()) this.model.retire(e.id); }
 
   recorrelate() {
     for (const c of this.controllers) {
@@ -86,8 +132,8 @@ export class EdgeModel {
     for (const c of this.controllers) {
       const n = c.artifact.name;
       if (c.file.deviceInstance === undefined) q.push({ id: `noinst:${c.artifact.sha256}`, subject: n, kind: 'no-instance', text: `${n} declares no device instance, so it cannot be matched to a station device. Which device is it?`, evidence: [`format ${c.file.format}`, `${c.file.points.length} points`], options: (s?.devices ?? []).map((d) => d.name) });
-      else if (s && !c.matchedDevice) q.push({ id: `unmatched:${c.artifact.sha256}`, subject: n, kind: 'unmatched-controller', text: `${n} is device ${c.file.deviceInstance}, but no station device has that instance. Renumbered, not yet added, or a different trunk?`, evidence: [`station devices: ${s.devices.map((d) => `${d.name}=${d.instance ?? '?'}`).join(', ') || 'none'}`], options: ['Not on this station yet', 'Renumbered: it is one of the listed devices', 'Different trunk or supervisor'] });
-      else if (c.correlation.onlyController.length) q.push({ id: `missing:${c.artifact.sha256}`, subject: n, kind: 'missing-points', text: `${c.correlation.onlyController.length} objects ${n} exposes are not in the station. Read them directly from the controller, or leave them?`, evidence: c.correlation.onlyController.map((p) => `${p.name} · ${p.ref.objectType}:${p.ref.instance}${p.exposed ? '' : ' · not exposed by the controller'}`), options: ['Read them directly from the controller', 'Leave them out'] });
+      else if (s && !c.matchedDevice) q.push({ id: `unmatched:${c.artifact.sha256}`, subject: n, kind: 'unmatched-controller', target: '/', text: `${n} is device ${c.file.deviceInstance}, but no station device has that instance. Renumbered, not yet added, or a different trunk?`, evidence: [`station devices: ${s.devices.map((d) => `${d.name}=${d.instance ?? '?'}`).join(', ') || 'none'}`], options: ['Not on this station yet', 'Renumbered: it is one of the listed devices', 'Different trunk or supervisor'] });
+      else if (c.correlation.onlyController.length) q.push({ id: `missing:${c.artifact.sha256}`, subject: n, kind: 'missing-points', target: c.matchedDevice ?? '/', text: `${c.correlation.onlyController.length} objects ${n} exposes are not in the station. Read them directly from the controller, or leave them?`, evidence: c.correlation.onlyController.map((p) => `${p.name} · ${p.ref.objectType}:${p.ref.instance}${p.exposed ? '' : ' · not exposed by the controller'}`), options: ['Read them directly from the controller', 'Leave them out'] });
     }
     if (s && Object.keys(s.unknownTypes).length) q.push({ id: 'unknown-types', subject: s.stationName, kind: 'unknown-types', text: `${Object.keys(s.unknownTypes).length} component types in the station are not understood. They were counted, not guessed.`, evidence: Object.entries(s.unknownTypes).slice(0, 12).map(([t, c]) => `${t} ×${c}`), options: ['Noted: they are vendor modules I expect', 'Flag for the importer'] });
     for (const c of this.controllers) if (Object.keys(c.file.unknownObjectTypes).length) q.push({ id: `unk:${c.artifact.sha256}`, subject: c.artifact.name, kind: 'unknown-types', text: `${c.artifact.name} has object types the importer does not map.`, evidence: Object.entries(c.file.unknownObjectTypes).map(([t, n]) => `${t} ×${n}`), options: ['Noted', 'Flag for the importer'] });
@@ -100,7 +146,8 @@ export class EdgeModel {
     return {
       atoll: { name: 'Atoll preview', mode: 'local', storage: 'in-memory (preview)', connectors: [] as string[] },
       artifacts: this.artifacts,
-      station: s ? { ...s.station, artifact: s.artifact, coverage: s.coverage, redactions: s.redactions, elapsedMs: s.elapsedMs } : null,
+      documents: this.documents,
+      station: s ? { ...s.station, artifact: s.artifact, coverage: s.coverage, redactions: s.redactions, handles: s.handles, elapsedMs: s.elapsedMs } : null,
       controllers: this.controllers.map((c) => ({ artifact: c.artifact, deviceName: c.file.deviceName, deviceInstance: c.file.deviceInstance ?? null, format: c.file.format, confidence: c.file.confidence, points: c.file.points, warnings: c.file.warnings, unknownObjectTypes: c.file.unknownObjectTypes, matchedDevice: c.matchedDevice ?? null, correlation: c.correlation })),
       questions: this.questions(true),
       snapshots: this.model.snapshots.map((x) => ({ id: x.id, at: x.at, label: x.label, entities: x.entityIds.length, assertions: x.assertionIds.length })),

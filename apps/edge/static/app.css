@@ -113,3 +113,10 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
 .toast { position: fixed; right: 18px; bottom: 44px; background: var(--ink); color: var(--bg); padding: 10px 14px; border-radius: var(--radius); font-size: 13px; z-index: 30; max-width: 420px; }
 .toast.err { background: var(--question); color: #fff; }
 @media (max-width: 760px) { .shell { grid-template-columns: 1fr; } .rail { position: static; height: auto; flex-direction: row; flex-wrap: wrap; } .rail-foot { margin-top: 0; width: 100%; grid-auto-flow: column; } .rail a .k { display: none; } }
+
+.who { display: grid; gap: 3px; }
+.who .lab { font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
+.who select { width: 100%; padding: 5px 6px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--ink); font-size: 12px; }
+.caps { font-size: 10px; color: var(--ink-3); line-height: 1.5; word-break: break-word; }
+[data-needs][data-denied] { display: none !important; }
+.doc-row select { padding: 4px 6px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--ink); font-size: 12px; }

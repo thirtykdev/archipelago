@@ -17,8 +17,11 @@
       <a href="#controllers" data-nav="controllers"><span class="k">04</span>Controllers</a>
       <a href="#questions" data-nav="questions"><span class="k">05</span>Questions <b class="count" data-qcount>0</b></a>
       <a href="#changes" data-nav="changes"><span class="k">06</span>Changes</a>
-      <a href="#artifacts" data-nav="artifacts"><span class="k">07</span>Artifacts</a>
+      <a href="#documents" data-nav="documents"><span class="k">07</span>Drawings</a>
+      <a href="#artifacts" data-nav="artifacts"><span class="k">08</span>Artifacts</a>
       <div class="rail-foot">
+        <label class="who"><span class="lab">acting as</span><select data-user></select></label>
+        <div class="caps mono" data-caps></div>
         <div class="chip chip-local" title="Nothing leaves this machine">local only</div>
         <div class="chip" data-conn>no connector</div>
         <button type="button" class="theme" data-theme-toggle aria-label="Toggle theme">◐</button>
@@ -28,17 +31,18 @@
       <header class="topbar">
         <div class="crumbs"><span data-site>No station imported</span></div>
         <div class="top-actions">
-          <label class="btn btn-primary file-btn">Import files<input type="file" multiple data-file-input /></label>
-          <button type="button" class="btn" data-reset>Reset</button>
+          <label class="btn btn-primary file-btn" data-needs="config.import">Import files<input type="file" multiple data-file-input /></label>
+          <button type="button" class="btn" data-reset data-needs="admin.site">Reset</button>
         </div>
       </header>
-      <div class="drop" data-drop hidden><div>Drop station backups (.bog, .dist) and controller files (.caf, .gfx) here</div></div>
+      <div class="drop" data-drop hidden><div>Drop station backups (.bog, .dist), controller files (.caf, .gfx), drawings and submittals (.pdf, .png, .dxf, .dwg) here</div></div>
       <section class="view" data-view="overview"></section>
       <section class="view" data-view="devices" hidden></section>
       <section class="view" data-view="points" hidden></section>
       <section class="view" data-view="controllers" hidden></section>
       <section class="view" data-view="questions" hidden></section>
       <section class="view" data-view="changes" hidden></section>
+      <section class="view" data-view="documents" hidden></section>
       <section class="view" data-view="artifacts" hidden></section>
       <footer class="foot"><span>Atoll preview · in-memory · every fact labeled with its source</span><span data-status></span></footer>
     </main>
