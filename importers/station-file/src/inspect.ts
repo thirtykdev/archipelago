@@ -5,7 +5,7 @@ import { Caps, DEFAULT_CAPS, Refused } from './caps.ts';
 import { sniff } from './sniff.ts';
 import { listZip, readZipEntry, gunzipBounded } from './archive.ts';
 import { parseXml } from './xml.ts';
-import { toGraph } from './graph.ts';
+import { toGraph, walk } from './graph.ts';
 import { redactGraph } from './redact.ts';
 import { mapStation, type StationModel } from './niagara.ts';
 
@@ -14,6 +14,8 @@ export interface InspectReport {
   entry?: string;
   station: StationModel;
   redactions: Redaction[];
+  /** path -> persisted handle, for identity across imports */
+  handles: Record<string, string>;
   coverage: Record<string, { have: number; of: number }>;
   elapsedMs: number;
 }
@@ -46,6 +48,7 @@ export function inspect(bytes: Uint8Array, caps: Caps = DEFAULT_CAPS): InspectRe
   const redactions = redactGraph(graph.root);
   const artifact = { sha256: sha256(bytes), size: bytes.length, format: opened.format };
   const station = mapStation(graph, artifact.sha256);
+  const handles: Record<string, string> = {}; for (const n of walk(graph.root)) if (n.handle) handles[n.path] = n.handle;
   station.warnings.push(...doc.warnings.slice(0, 20));
   if (doc.warnings.length > 20) station.warnings.push(`… ${doc.warnings.length - 20} more XML warnings`);
   const pts = station.points.length;
@@ -55,7 +58,7 @@ export function inspect(bytes: Uint8Array, caps: Caps = DEFAULT_CAPS): InspectRe
     'devices with an instance number': { have: station.devices.filter((d) => d.instance !== undefined).length, of: station.devices.length },
     'components of a known type': { have: Object.values(station.knownTypes).reduce((a, b) => a + b, 0), of: Object.values(station.knownTypes).reduce((a, b) => a + b, 0) + Object.values(station.unknownTypes).reduce((a, b) => a + b, 0) },
   };
-  return { artifact, ...(opened.entry ? { entry: opened.entry } : {}), station, redactions, coverage, elapsedMs: Math.round(performance.now() - t0) };
+  return { artifact, ...(opened.entry ? { entry: opened.entry } : {}), station, redactions, handles, coverage, elapsedMs: Math.round(performance.now() - t0) };
 }
 
 export function renderText(r: InspectReport): string {

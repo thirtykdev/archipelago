@@ -14,6 +14,7 @@ const HELP = `archipelago <command> [options]
                       at start. Everything stays in memory on this machine.
       --port <n>      default 2865
       --simulate      a simulated connector invents live values for every native address (no building needed)
+      --data <dir>    keep the model on disk in this folder (event log + artifacts encrypted at rest); omit for memory only
 
 Examples
   archipelago inspect backup.dist
@@ -22,14 +23,14 @@ Examples
 `;
 
 async function main(argv: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({ args: argv, options: { json: { type: 'boolean', default: false }, help: { type: 'boolean', short: 'h', default: false }, port: { type: 'string', default: '2865' }, simulate: { type: 'boolean', default: false } }, allowPositionals: true });
+  const { values, positionals } = parseArgs({ args: argv, options: { json: { type: 'boolean', default: false }, help: { type: 'boolean', short: 'h', default: false }, port: { type: 'string', default: '2865' }, simulate: { type: 'boolean', default: false }, data: { type: 'string' } }, allowPositionals: true });
   const [cmd, file] = positionals;
   if (values.help || !cmd) { process.stdout.write(HELP); return cmd ? 0 : 2; }
   if (cmd === 'serve') {
-    const edge = createEdge({ port: Number(values.port), simulate: values.simulate });
+    const edge = createEdge({ port: Number(values.port), simulate: values.simulate, ...(values.data ? { dataDir: values.data } : {}) });
     for (const f of positionals.slice(1)) { try { const a = await edge.preload(f.split(/[\\/]/).pop() ?? f, readFileSync(f)); process.stdout.write(`imported ${a.name} (${a.kind}, ${a.format})\n`); } catch (e) { process.stderr.write(`${f}: ${(e as Error).message}\n`); } }
     const { port, host } = await edge.listen();
-    process.stdout.write(`Atoll preview listening on http://${host}:${port}  (local only · ${values.simulate ? 'simulated connector on' : 'no connector'} · in-memory)\n`);
+    process.stdout.write(`Atoll preview listening on http://${host}:${port}  (local only · ${values.simulate ? 'simulated connector on' : 'no connector'} · ${values.data ? 'data in ' + values.data : 'in-memory'})\n`);
     await new Promise(() => {});
     return 0;
   }

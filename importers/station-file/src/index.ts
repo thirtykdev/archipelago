@@ -6,3 +6,4 @@ export { toGraph, walk, child } from './graph.ts';
 export { redactGraph } from './redact.ts';
 export { mapStation, type StationModel } from './niagara.ts';
 export { DEFAULT_CAPS, CapExceeded, Refused, type Caps } from './caps.ts';
+export { applyStation, stationEntityId } from './assertions.ts';

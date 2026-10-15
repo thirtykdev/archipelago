@@ -95,3 +95,5 @@ export function correlate<A extends Describable, B extends Describable>(as: A[],
   for (const a of as) { const b = bi.get(key(a.ref)); if (b) { matched.push({ a, b }); bi.delete(key(a.ref)); } else onlyA.push(a); }
   return { matched, onlyA, onlyB: [...bi.values()] };
 }
+
+export { Model, type Entity, type Snapshot, type Change, type Diff, type ModelEvent } from './model.ts';

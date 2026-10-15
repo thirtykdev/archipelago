@@ -8,14 +8,18 @@ import { refKey, type Reading, type Session } from '@archipelago/core';
 import { CapExceeded, Refused } from '@archipelago/importer-station-file';
 import { simulatedConnector } from '@archipelago/connector-simulated';
 import { EdgeModel } from './model.ts';
+import { Store } from './store.ts';
 
-export interface EdgeOptions { port?: number; host?: string; simulate?: boolean; maxUploadBytes?: number; tickMs?: number }
+export interface EdgeOptions { port?: number; host?: string; simulate?: boolean; maxUploadBytes?: number; tickMs?: number; /** folder for the model log and encrypted artifacts; omitted = in memory only */ dataDir?: string }
 const STATIC = join(dirname(fileURLToPath(import.meta.url)), '..', 'static');
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json' };
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'";
 
 export function createEdge(opts: EdgeOptions = {}) {
   const model = new EdgeModel();
+  const store = opts.dataDir ? new Store(opts.dataDir) : undefined;
+  let replayed = 0;
+  if (store) { replayed = store.attach(model.model); for (const a of store.listArtifacts()) { const bytes = store.getArtifact(a.sha256); if (bytes) { try { model.import(a.name, bytes); } catch { /* an artifact that no longer parses is kept but not loaded */ } } } }
   const clients = new Set<http.ServerResponse>();
   let session: Session | undefined; let unsubscribe: (() => void) | undefined;
   const maxUpload = opts.maxUploadBytes ?? 256 * 1024 * 1024;
@@ -36,7 +40,17 @@ export function createEdge(opts: EdgeOptions = {}) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     try {
-      if (req.method === 'GET' && url.pathname === '/api/model') return json(res, 200, { ...model.snapshot(), atoll: { name: 'Atoll preview', mode: 'local', storage: 'in-memory (preview)', connectors: opts.simulate ? [simulatedConnector.describe()] : [] } });
+      if (req.method === 'GET' && url.pathname === '/api/model') return json(res, 200, { ...model.snapshot(), atoll: { name: 'Atoll preview', mode: 'local', storage: store ? `on disk · ${store.dir} · artifacts encrypted` : 'in-memory (preview)', replayedEvents: replayed, connectors: opts.simulate ? [simulatedConnector.describe()] : [] } });
+      if (req.method === 'GET' && url.pathname === '/api/diff') { const from = url.searchParams.get('from'), to = url.searchParams.get('to'); if (!from || !to) return json(res, 400, { error: 'from and to are required' }); try { return json(res, 200, model.model.diff(from, to)); } catch (e) { return json(res, 404, { error: (e as Error).message }); } }
+      if (req.method === 'GET' && url.pathname.startsWith('/api/facts/')) { const id = decodeURIComponent(url.pathname.slice('/api/facts/'.length)); const e = model.model.entities.get(id); if (!e) return json(res, 404, { error: 'unknown entity' }); return json(res, 200, { entity: e, facts: model.model.facts(id).map((a) => ({ ...a, history: model.model.history(id, a.key).length })) }); }
+      if (req.method === 'POST' && url.pathname.startsWith('/api/questions/')) {
+        const id = decodeURIComponent(url.pathname.slice('/api/questions/'.length).replace(/\/answer$/, ''));
+        let body = ''; for await (const ch of req) { body += ch; if (body.length > 64 * 1024) return json(res, 413, { error: 'too large' }); }
+        let parsed: { answer?: string; by?: string } = {}; try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
+        if (!parsed.answer) return json(res, 400, { error: 'answer is required' });
+        const q = model.answer(id, parsed.answer, parsed.by?.trim() || 'technician'); if (!q) return json(res, 404, { error: 'unknown question' });
+        broadcast('model', { changed: 'question' }); return json(res, 200, { ok: true, question: q });
+      }
       if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { ok: true, local: true, simulate: !!opts.simulate, artifacts: model.artifacts.length, connector: session?.health() ?? null });
       if (req.method === 'POST' && url.pathname === '/api/import') {
         const name = decodeURIComponent(req.headers['x-filename']?.toString() ?? 'upload');
@@ -45,10 +59,10 @@ export function createEdge(opts: EdgeOptions = {}) {
         const chunks: Buffer[] = []; let size = 0;
         for await (const ch of req) { size += (ch as Buffer).length; if (size > maxUpload) return json(res, 413, { error: `file exceeds ${maxUpload} bytes` }); chunks.push(ch as Buffer); }
         const bytes = new Uint8Array(Buffer.concat(chunks));
-        try { const a = model.import(name.split(/[\\/]/).pop() ?? name, bytes); await resubscribe(); broadcast('model', { changed: a.name }); return json(res, 200, { ok: true, artifact: a }); }
+        try { const a = model.import(name.split(/[\\/]/).pop() ?? name, bytes); if (store) { store.putArtifact(a.sha256, a.name, bytes); for (const old of store.listArtifacts()) if (!model.artifacts.some((x) => x.sha256 === old.sha256)) store.removeArtifact(old.sha256); } await resubscribe(); broadcast('model', { changed: a.name }); return json(res, 200, { ok: true, artifact: a }); }
         catch (e) { if (e instanceof Refused || e instanceof CapExceeded) return json(res, 422, { error: `${e.name}: ${e.message}` }); throw e; }
       }
-      if (req.method === 'POST' && url.pathname === '/api/reset') { model.reset(); unsubscribe?.(); unsubscribe = undefined; broadcast('model', { changed: null }); return json(res, 200, { ok: true }); }
+      if (req.method === 'POST' && url.pathname === '/api/reset') { model.reset(); store?.wipe(); unsubscribe?.(); unsubscribe = undefined; broadcast('model', { changed: null }); return json(res, 200, { ok: true }); }
       if (req.method === 'GET' && url.pathname === '/api/events') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', 'content-security-policy': CSP });
         res.write(`event: hello\ndata: ${JSON.stringify({ simulate: !!opts.simulate })}\n\n`);
@@ -68,6 +82,6 @@ export function createEdge(opts: EdgeOptions = {}) {
 
   const listen = () => new Promise<{ port: number; host: string }>((resolve) => { server.listen(opts.port ?? 2865, opts.host ?? '127.0.0.1', () => { const a = server.address() as { port: number; address: string }; resolve({ port: a.port, host: a.address }); }); });
   const close = async () => { unsubscribe?.(); await session?.close(); for (const c of clients) c.end(); await new Promise<void>((r) => server.close(() => r())); };
-  const preload = async (name: string, bytes: Uint8Array) => { const a = model.import(name, bytes); await resubscribe(); return a; };
+  const preload = async (name: string, bytes: Uint8Array) => { const a = model.import(name, bytes); if (store) { store.putArtifact(a.sha256, a.name, bytes); for (const old of store.listArtifacts()) if (!model.artifacts.some((x) => x.sha256 === old.sha256)) store.removeArtifact(old.sha256); } await resubscribe(); return a; };
   return { server, model, listen, close, preload };
 }

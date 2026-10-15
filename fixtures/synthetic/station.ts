@@ -8,7 +8,10 @@ const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 
 export function stationXml(o: StationOpts = {}): string {
   const name = o.name ?? 'Synthetic_Jace', nd = o.devices ?? 3, np = o.pointsPerDevice ?? 4;
-  let h = 0x100; const H = () => (h++).toString(16);
+  // handles are stable per path, like a real station's persisted handles, so re-generating with more or fewer
+  // devices keeps the same handle for the same component
+  let seq = 0; let ctx = 'root';
+  const H = (key?: string) => { const k = key ?? `${ctx}#${seq++}`; let x = 0x811c9dc5; for (let i = 0; i < k.length; i++) { x ^= k.charCodeAt(i); x = Math.imul(x, 0x01000193) >>> 0; } return (x % 0xfffff).toString(16).padStart(5, '0'); };
   const L: string[] = [];
   L.push(`<?xml version="1.0" encoding="UTF-8"?>`);
   L.push(`<bajaObjectGraph version="4.0" reversibleEncodingKeySource="none" FIPSEnabled="false" reversibleEncodingValidator="[null.1]=" >`);
@@ -22,7 +25,7 @@ export function stationXml(o: StationOpts = {}): string {
   L.push(`  <p n="BacnetNetwork" h="${H()}" m="bac=bacnet" t="bac:BacnetNetwork">`);
   L.push(`   <p n="localDevice" h="${H()}" t="bac:LocalBacnetDevice"><p n="objectId" t="bac:BacnetObjectIdentifier" v="device:1000"/></p>`);
   for (let d = 1; d <= nd; d++) {
-    const dn = `VAV_${String(d).padStart(2, '0')}`;
+    const dn = `VAV_${String(d).padStart(2, '0')}`; ctx = dn; seq = 0;
     L.push(`   <p n="${dn}" h="${H()}" t="bac:BacnetDevice">`);
     L.push(`    <p n="address" t="bac:BacnetAddress"><p n="networkNumber" v="1000"/><p n="macAddress" t="bac:BacnetOctetString" v="${String(d).padStart(2, '0')}"/></p>`);
     L.push(`    <p n="config" h="${H()}" t="bac:BacnetConfigDeviceExt"><p n="deviceObject" h="${H()}" t="bac:BacnetDeviceObject"><p n="objectId" t="bac:BacnetObjectIdentifier" v="device:${2000 + d}"/></p></p>`);
@@ -36,7 +39,7 @@ export function stationXml(o: StationOpts = {}): string {
       ['DA_T', 'c:NumericPoint', 'units=u:°F', 'bac:BacnetNumericProxyExt', 'analogInput:6'],
     ];
     for (let p = 0; p < np; p++) {
-      const [pn, pt, facets, proxy, oid] = defs[p % defs.length]!;
+      const [pn, pt, facets, proxy, oid] = defs[p % defs.length]!; ctx = `${dn}/${pn}`; seq = 0;
       L.push(`     <p n="${pn}" h="${H()}" m="c=control" t="${pt}">`);
       L.push(`      <p n="facets" t="b:Facets" v="${esc(facets)}"/>`);
       L.push(`      <p n="proxyExt" h="${H()}" t="${proxy}"><p n="objectId" t="bac:BacnetObjectIdentifier" v="${oid}"/><p n="propertyId" t="bac:BacnetPropertyIdentifier" v="presentValue"/></p>`);
@@ -45,10 +48,11 @@ export function stationXml(o: StationOpts = {}): string {
       if (pn === 'ZN_T') L.push(`      <p n="OutOfRange" h="${H()}" m="a=alarm" t="a:AlarmSourceExt"><p n="offnormalAlgorithm" h="${H()}" t="a:OutOfRangeAlgorithm"><p n="highLimit" v="85.0"/><p n="lowLimit" v="60.0"/></p></p>`);
       L.push(`     </p>`);
     }
-    if (o.withLink && np >= 5) L.push(`     <p n="Link" h="${H()}" t="b:Link"><p n="sourceOrd" v="h:${(h - 3).toString(16)}"/><p n="sourceSlotName" v="out"/><p n="targetSlotName" v="in10"/></p>`);
+    if (o.withLink && np >= 5) { ctx = `${dn}/Link`; seq = 0; L.push(`     <p n="Link" h="${H()}" t="b:Link"><p n="sourceOrd" v="h:${H(`${dn}/SF_S#0`)}"/><p n="sourceSlotName" v="out"/><p n="targetSlotName" v="in10"/></p>`); }
     L.push(`    </p>`);
     L.push(`   </p>`);
   }
+  ctx = 'tail'; seq = 0;
   L.push(`  </p>`);
   if (o.withUnknownModule) L.push(`  <p n="Mystery" h="${H()}" m="zz=someVendorModule" t="zz:MysteryNetwork"><p n="thing" h="${H()}" t="zz:MysteryDevice"><p n="points" h="${H()}" t="zz:MysteryPoints"/></p></p>`);
   L.push(` </p>`);

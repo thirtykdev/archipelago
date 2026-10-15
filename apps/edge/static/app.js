@@ -3,7 +3,7 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const refKey = (ref) => Object.keys(ref).filter((k) => k !== 'connector').sort().map((k) => `${k}=${ref[k]}`).join('|');
-const state = { model: null, view: 'overview', selectedDevice: null, filter: '', simulate: false, changed: new Set() };
+const state = { model: null, view: 'overview', selectedDevice: null, filter: '', simulate: false, changed: new Set(), showAnswered: false, diffFrom: null, diffTo: null, by: (() => { try { return localStorage.getItem('atoll-by') || ''; } catch { return ''; } })() };
 
 // ---- theme ----
 try { const t = localStorage.getItem('atoll-theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch {}
@@ -60,10 +60,10 @@ function render() {
   const m = state.model; if (!m) return;
   const s = m.station;
   $('[data-site]').innerHTML = s ? `${esc(s.stationName || 'station')} <span class="muted">· ${s.artifact.format} · ${s.components} components</span>` : 'No station imported';
-  const qc = $('[data-qcount]'); qc.textContent = m.questions.length; qc.toggleAttribute('data-zero', !m.questions.length);
-  $('[data-status]').textContent = `${m.artifacts.length} artifact${m.artifacts.length === 1 ? '' : 's'} · ${Object.keys(m.readings).length} live values`;
+  const open = m.questions.filter((q) => !q.answered); const qc = $('[data-qcount]'); qc.textContent = open.length; qc.toggleAttribute('data-zero', !open.length);
+  $('[data-status]').textContent = `${m.artifacts.length} artifact${m.artifacts.length === 1 ? '' : 's'} · ${m.model.entities} entities · ${m.model.assertions} facts (${m.model.superseded} superseded) · ${m.snapshots.length} snapshots · ${Object.keys(m.readings).length} live values · ${m.atoll.storage}`;
   renderConn();
-  ({ overview, devices, points, controllers, questions, artifacts })[state.view]?.();
+  ({ overview, devices, points, controllers, questions, changes, artifacts })[state.view]?.();
 
   function overview() {
     const v = $('[data-view="overview"]');
@@ -78,7 +78,7 @@ function render() {
         ${tile(s?.extensions.filter((e) => e.kind === 'alarm').length ?? 0, 'alarms', 'extensions on the station')}
         ${tile(m.controllers.length, 'controller files', `${m.controllers.filter((c) => c.matchedDevice).length} matched to a device`)}
         ${tile(missing, 'not in the station', 'exposed by controllers, never pulled in', missing ? 'q' : '')}
-        ${tile(m.questions.length, 'questions', 'for a technician', m.questions.length ? 'q' : '')}
+        ${tile(open.length, 'open questions', `${m.questions.length - open.length} answered`, open.length ? 'q' : '')}
       </div>
       <div class="split">
         <div class="panel"><div class="panel-head"><h3>Coverage</h3><span class="muted mono">${s ? s.elapsedMs + ' ms' : ''}</span></div><div class="panel-body bars">${s ? Object.entries(s.coverage).map(([k, c]) => bar(k, c)).join('') : '<span class="muted">no station</span>'}</div></div>
@@ -142,7 +142,38 @@ function render() {
 
   function questions() {
     const v = $('[data-view="questions"]');
-    v.innerHTML = m.questions.length ? `<p class="lede">What Atoll could not establish from the files. It asks; it does not invent. Answering is the next slice (confirm or reject writes a new fact that supersedes the inference).</p>` + m.questions.map((q) => `<div class="q"><div class="who">${esc(q.kind)} · ${esc(q.subject)}</div><div>${esc(q.text)}</div><div class="ev">${q.evidence.map(esc).join('\n')}</div></div>`).join('') : `<div class="panel"><div class="empty"><b>No open questions</b>Everything imported so far was understood, or nothing is imported yet.</div></div>`;
+    const list = state.showAnswered ? m.questions : m.questions.filter((q) => !q.answered);
+    v.innerHTML = `<div class="panel"><div class="panel-head"><div><h3>Questions · ${open.length} open <span class="muted">· ${m.questions.length - open.length} answered</span></h3><span class="muted">What Atoll could not establish from the files. It asks; it does not invent. An answer is a confirmed fact that supersedes the inference and is kept with your name and the time.</span></div>
+      <div class="filter"><label class="muted">answering as</label><input type="text" placeholder="your name" value="${esc(state.by)}" data-by /><label class="muted"><input type="checkbox" data-show-answered ${state.showAnswered ? 'checked' : ''}/> show answered</label></div></div></div>
+      ${list.map((q) => `<div class="q ${q.answered ? 'q-done' : ''}"><div class="who">${esc(q.kind)} · ${esc(q.subject)}</div><div>${esc(q.text)}</div><div class="ev">${q.evidence.map(esc).join('\n')}</div>
+        ${q.answered ? `<div class="ans"><span class="prov prov-confirmed">confirmed</span> <b>${esc(q.answered.answer)}</b> <span class="muted mono">· ${esc(q.answered.by)} · ${esc(q.answered.at.slice(0, 19).replace('T', ' '))}</span></div>` : `<div class="ans">${q.options.map((o) => `<button type="button" class="btn btn-sm" data-answer="${esc(q.id)}" data-option="${esc(o)}">${esc(o)}</button>`).join('')}</div>`}</div>`).join('') || `<div class="panel"><div class="empty"><b>No open questions</b>Everything imported so far was understood, or nothing is imported yet.</div></div>`}`;
+    $('[data-by]', v).addEventListener('change', (e) => { state.by = e.target.value; try { localStorage.setItem('atoll-by', state.by); } catch {} });
+    $('[data-show-answered]', v).addEventListener('change', (e) => { state.showAnswered = e.target.checked; questions(); });
+    $$('[data-answer]', v).forEach((b) => b.addEventListener('click', async () => { state.by = $('[data-by]', v).value || state.by; const r = await fetch(`/api/questions/${encodeURIComponent(b.dataset.answer)}/answer`, { method: 'POST', body: JSON.stringify({ answer: b.dataset.option, by: state.by || 'technician' }) }); const j = await r.json(); if (!r.ok) toast(j.error, true); else toast(`Recorded: ${j.question.answered.answer}`); }));
+  }
+
+  function changes() {
+    const v = $('[data-view="changes"]');
+    const snaps = m.snapshots;
+    if (snaps.length < 2) { v.innerHTML = `<div class="panel"><div class="empty"><b>Nothing to compare yet</b>Every import and every answer takes a snapshot. Import a changed backup of the same station and the difference appears here: added, removed, re-identified, and changed facts.</div></div>${snapTable()}`; return; }
+    const from = state.diffFrom ?? snaps[snaps.length - 2].id, to = state.diffTo ?? snaps[snaps.length - 1].id;
+    const opt = (sel) => snaps.map((x) => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${esc(x.label)} · ${x.at.slice(11, 19)} · ${x.id.slice(0, 8)}</option>`).join('');
+    v.innerHTML = `<div class="panel"><div class="panel-head"><h3>Changes</h3><div class="filter"><select data-from>${opt(from)}</select><span class="muted">→</span><select data-to>${opt(to)}</select></div></div><div class="panel-body" data-diff><span class="muted">loading…</span></div></div>${snapTable()}`;
+    const load = async () => { const d = await (await fetch(`/api/diff?from=${encodeURIComponent($('[data-from]', v).value)}&to=${encodeURIComponent($('[data-to]', v).value)}`)).json(); state.diffFrom = d.from; state.diffTo = d.to; $('[data-diff]', v).innerHTML = diffHtml(d); };
+    $('[data-from]', v).addEventListener('change', load); $('[data-to]', v).addEventListener('change', load); load();
+    function snapTable() { return `<div class="panel"><div class="panel-head"><h3>Snapshots · ${snaps.length}</h3><span class="muted mono">content-addressed · identical states share an id</span></div><div class="table-wrap"><table><thead><tr><th>When</th><th>Label</th><th class="mono">Id</th><th class="num">Entities</th><th class="num">Facts</th></tr></thead><tbody>${snaps.slice().reverse().map((x) => `<tr><td class="mono">${x.at.slice(0, 19).replace('T', ' ')}</td><td>${esc(x.label)}</td><td class="mono">${x.id}</td><td class="num">${x.entities}</td><td class="num">${x.assertions}</td></tr>`).join('')}</tbody></table></div></div>`; }
+    function diffHtml(d) {
+      const n = d.added.length + d.removed.length + d.changed.length + d.renamed.length;
+      if (!n) return `<span class="muted">No difference between these two snapshots.</span>`;
+      const ent = (e) => `<li><span><b>${esc(e.name)}</b> <span class="kind">${esc(e.kind)}</span></span><span class="mono muted">${esc(e.path ?? e.id)}</span></li>`;
+      return `<div class="three">
+        <div><h3>Added <span class="prov prov-observed">${d.added.length}</span></h3><ul class="list">${d.added.map(ent).join('') || '<li class="muted">none</li>'}</ul></div>
+        <div><h3>Removed <span class="prov prov-question">${d.removed.length}</span></h3><ul class="list">${d.removed.map(ent).join('') || '<li class="muted">none</li>'}</ul></div>
+        <div><h3>Re-identified <span class="muted">${d.renamed.length}</span></h3><ul class="list">${d.renamed.map((r) => `<li><span><b>${esc(r.entity.name)}</b></span><span class="mono muted">${esc(r.from)} → ${esc(r.to)}</span></li>`).join('') || '<li class="muted">none</li>'}</ul></div>
+      </div>
+      <h3>Changed facts <span class="prov prov-inferred">${d.changed.length}</span></h3>
+      <div class="table-wrap"><table><thead><tr><th>Entity</th><th>Fact</th><th>From</th><th>To</th></tr></thead><tbody>${d.changed.map((c) => `<tr><td><b>${esc(c.name)}</b> <span class="mono muted">${esc(c.subject)}</span></td><td class="mono">${esc(c.key)}</td><td class="mono">${esc(JSON.stringify(c.from) ?? '—')}</td><td class="mono">${esc(JSON.stringify(c.to) ?? '—')}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">none</td></tr>'}</tbody></table></div>`;
+    }
   }
 
   function artifacts() {

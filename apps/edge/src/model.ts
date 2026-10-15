@@ -1,14 +1,15 @@
 // The in-memory model behind the preview runtime. Everything here is derived from imported files and labeled.
-import { correlate, refKey, sha256, type NativeRef, type Reading } from '@archipelago/core';
-import { inspect, type InspectReport } from '@archipelago/importer-station-file';
+import { correlate, refKey, sha256, Model, type NativeRef, type Reading, type Provenance } from '@archipelago/core';
+import { inspect, applyStation, type InspectReport } from '@archipelago/importer-station-file';
 import { parseControllerFile, type ControllerFile } from '@archipelago/importer-controller-file';
 import { listZip, sniff, Refused } from '@archipelago/importer-station-file';
 
 export interface Artifact { name: string; sha256: string; size: number; format: string; importedAt: string; kind: 'station' | 'controller' }
 export interface ControllerEntry { artifact: Artifact; file: ControllerFile; matchedDevice?: string; correlation: { matched: number; onlyController: Array<{ name: string; ref: NativeRef; kind: string; writable: boolean; exposed: boolean }>; onlyStation: Array<{ name: string; path: string }>; matchedPairs: Array<{ controller: string; station: string; path: string }> } }
-export interface Question { id: string; subject: string; text: string; evidence: string[]; kind: 'unmatched-controller' | 'missing-points' | 'no-instance' | 'unknown-types' | 'warning' }
+export interface Question { id: string; subject: string; text: string; evidence: string[]; kind: 'unmatched-controller' | 'missing-points' | 'no-instance' | 'unknown-types' | 'warning'; options: string[]; answered?: { answer: string; by: string; at: string } }
 
 export class EdgeModel {
+  readonly model = new Model();
   artifacts: Artifact[] = [];
   station: InspectReport | undefined;
   controllers: ControllerEntry[] = [];
@@ -29,17 +30,21 @@ export class EdgeModel {
   import(name: string, bytes: Uint8Array): Artifact {
     const kind = this.classify(bytes);
     const base = { name, sha256: sha256(bytes), size: bytes.length, importedAt: new Date().toISOString(), kind };
-    if (kind === 'station') { const r = inspect(bytes); this.station = r; const a = { ...base, format: r.artifact.format }; this.artifacts = this.artifacts.filter((x) => x.kind !== 'station'); this.artifacts.push(a); this.recorrelate(); return a; }
+    if (kind === 'station') { const r = inspect(bytes); this.station = r; const a = { ...base, format: r.artifact.format }; this.artifacts = this.artifacts.filter((x) => x.kind !== 'station'); this.artifacts.push(a); applyStation(this.model, r, new Map(Object.entries(r.handles))); this.recorrelate(); this.model.snapshot(`import ${name}`, this.artifacts.map((x) => x.sha256)); return a; }
     const f = parseControllerFile(bytes);
     const a = { ...base, format: f.format };
     this.controllers = this.controllers.filter((c) => c.artifact.sha256 !== a.sha256);
     this.controllers.push({ artifact: a, file: f, correlation: { matched: 0, onlyController: [], onlyStation: [], matchedPairs: [] } });
     this.artifacts = this.artifacts.filter((x) => x.sha256 !== a.sha256); this.artifacts.push(a);
     this.recorrelate();
+    const cid = `controller|${a.sha256}`; const imp = (locator: string): Provenance => ({ kind: 'imported', artifact: a.sha256, locator });
+    this.model.addEntity({ id: cid, kind: 'program', name: a.name, path: a.name });
+    this.model.assert(cid, 'format', f.format, imp(a.name)); this.model.assert(cid, 'deviceInstance', f.deviceInstance ?? null, imp(a.name)); this.model.assert(cid, 'points', f.points.length, imp(a.name));
+    this.model.snapshot(`import ${name}`, this.artifacts.map((x) => x.sha256));
     return a;
   }
 
-  reset() { this.artifacts = []; this.station = undefined; this.controllers = []; this.readings.clear(); }
+  reset() { this.artifacts = []; this.station = undefined; this.controllers = []; this.readings.clear(); for (const e of this.model.live()) this.model.retire(e.id); }
 
   recorrelate() {
     for (const c of this.controllers) {
@@ -66,18 +71,28 @@ export class EdgeModel {
     return out;
   }
 
-  questions(): Question[] {
+  answer(questionId: string, answer: string, by: string): Question | undefined {
+    const q = this.questions(true).find((x) => x.id === questionId); if (!q) return undefined;
+    const subject = `question|${questionId}`;
+    this.model.addEntity({ id: subject, kind: 'program', name: q.text.slice(0, 80), path: subject });
+    this.model.assert(subject, 'answer', answer, { kind: 'confirmed', by, at: new Date().toISOString() });
+    this.model.snapshot(`answer · ${q.kind} · ${q.subject}`, this.artifacts.map((x) => x.sha256));
+    return this.questions(true).find((x) => x.id === questionId);
+  }
+  private answered(id: string) { const a = this.model.currentAssertion(`question|${id}`, 'answer'); return a && a.provenance.kind === 'confirmed' ? { answer: String(a.value), by: a.provenance.by, at: a.provenance.at } : undefined; }
+  questions(includeAnswered = false): Question[] {
     const q: Question[] = [];
     const s = this.station?.station;
     for (const c of this.controllers) {
       const n = c.artifact.name;
-      if (c.file.deviceInstance === undefined) q.push({ id: `noinst:${c.artifact.sha256}`, subject: n, kind: 'no-instance', text: `${n} declares no device instance, so it cannot be matched to a station device. Which device is it?`, evidence: [`format ${c.file.format}`, `${c.file.points.length} points`] });
-      else if (s && !c.matchedDevice) q.push({ id: `unmatched:${c.artifact.sha256}`, subject: n, kind: 'unmatched-controller', text: `${n} is device ${c.file.deviceInstance}, but no station device has that instance. Renumbered, not yet added, or a different trunk?`, evidence: [`station devices: ${s.devices.map((d) => `${d.name}=${d.instance ?? '?'}`).join(', ') || 'none'}`] });
-      else if (c.correlation.onlyController.length) q.push({ id: `missing:${c.artifact.sha256}`, subject: n, kind: 'missing-points', text: `${c.correlation.onlyController.length} objects ${n} exposes are not in the station. Read them directly from the controller, or leave them?`, evidence: c.correlation.onlyController.map((p) => `${p.name} · ${p.ref.objectType}:${p.ref.instance}${p.exposed ? '' : ' · not exposed by the controller'}`) });
+      if (c.file.deviceInstance === undefined) q.push({ id: `noinst:${c.artifact.sha256}`, subject: n, kind: 'no-instance', text: `${n} declares no device instance, so it cannot be matched to a station device. Which device is it?`, evidence: [`format ${c.file.format}`, `${c.file.points.length} points`], options: (s?.devices ?? []).map((d) => d.name) });
+      else if (s && !c.matchedDevice) q.push({ id: `unmatched:${c.artifact.sha256}`, subject: n, kind: 'unmatched-controller', text: `${n} is device ${c.file.deviceInstance}, but no station device has that instance. Renumbered, not yet added, or a different trunk?`, evidence: [`station devices: ${s.devices.map((d) => `${d.name}=${d.instance ?? '?'}`).join(', ') || 'none'}`], options: ['Not on this station yet', 'Renumbered: it is one of the listed devices', 'Different trunk or supervisor'] });
+      else if (c.correlation.onlyController.length) q.push({ id: `missing:${c.artifact.sha256}`, subject: n, kind: 'missing-points', text: `${c.correlation.onlyController.length} objects ${n} exposes are not in the station. Read them directly from the controller, or leave them?`, evidence: c.correlation.onlyController.map((p) => `${p.name} · ${p.ref.objectType}:${p.ref.instance}${p.exposed ? '' : ' · not exposed by the controller'}`), options: ['Read them directly from the controller', 'Leave them out'] });
     }
-    if (s && Object.keys(s.unknownTypes).length) q.push({ id: 'unknown-types', subject: s.stationName, kind: 'unknown-types', text: `${Object.keys(s.unknownTypes).length} component types in the station are not understood. They were counted, not guessed.`, evidence: Object.entries(s.unknownTypes).slice(0, 12).map(([t, c]) => `${t} ×${c}`) });
-    for (const c of this.controllers) if (Object.keys(c.file.unknownObjectTypes).length) q.push({ id: `unk:${c.artifact.sha256}`, subject: c.artifact.name, kind: 'unknown-types', text: `${c.artifact.name} has object types the importer does not map.`, evidence: Object.entries(c.file.unknownObjectTypes).map(([t, n]) => `${t} ×${n}`) });
-    return q;
+    if (s && Object.keys(s.unknownTypes).length) q.push({ id: 'unknown-types', subject: s.stationName, kind: 'unknown-types', text: `${Object.keys(s.unknownTypes).length} component types in the station are not understood. They were counted, not guessed.`, evidence: Object.entries(s.unknownTypes).slice(0, 12).map(([t, c]) => `${t} ×${c}`), options: ['Noted: they are vendor modules I expect', 'Flag for the importer'] });
+    for (const c of this.controllers) if (Object.keys(c.file.unknownObjectTypes).length) q.push({ id: `unk:${c.artifact.sha256}`, subject: c.artifact.name, kind: 'unknown-types', text: `${c.artifact.name} has object types the importer does not map.`, evidence: Object.entries(c.file.unknownObjectTypes).map(([t, n]) => `${t} ×${n}`), options: ['Noted', 'Flag for the importer'] });
+    for (const x of q) { const a = this.answered(x.id); if (a) x.answered = a; }
+    return includeAnswered ? q : q.filter((x) => !x.answered);
   }
 
   snapshot() {
@@ -87,7 +102,10 @@ export class EdgeModel {
       artifacts: this.artifacts,
       station: s ? { ...s.station, artifact: s.artifact, coverage: s.coverage, redactions: s.redactions, elapsedMs: s.elapsedMs } : null,
       controllers: this.controllers.map((c) => ({ artifact: c.artifact, deviceName: c.file.deviceName, deviceInstance: c.file.deviceInstance ?? null, format: c.file.format, confidence: c.file.confidence, points: c.file.points, warnings: c.file.warnings, unknownObjectTypes: c.file.unknownObjectTypes, matchedDevice: c.matchedDevice ?? null, correlation: c.correlation })),
-      questions: this.questions(),
+      questions: this.questions(true),
+      snapshots: this.model.snapshots.map((x) => ({ id: x.id, at: x.at, label: x.label, entities: x.entityIds.length, assertions: x.assertionIds.length })),
+      diff: this.model.snapshots.length >= 2 ? this.model.diff(this.model.snapshots[this.model.snapshots.length - 2]!.id, this.model.snapshots[this.model.snapshots.length - 1]!.id) : null,
+      model: { entities: this.model.live().length, assertions: this.model.assertions.size, superseded: this.model.supersededBy.size },
       readings: Object.fromEntries([...this.readings.entries()]),
     };
   }
