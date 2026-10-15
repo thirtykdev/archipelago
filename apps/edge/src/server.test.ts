@@ -82,7 +82,7 @@ describe('permissions', () => {
 });
 
 describe('drawings and submittals', () => {
-  it('accepts a PDF by content, serves it only to a reader, and attaches it to equipment as a confirmed fact', async () => {
+  it('accepts a PDF by content, serves it only with the download grant, and attaches it to equipment as a confirmed fact', async () => {
     const edge = createEdge({ port: 0 }); const { port } = await edge.listen(); const base = `http://127.0.0.1:${port}`;
     const as = (user: string) => ({ 'x-atoll-user': user });
     const pdf = new TextEncoder().encode('%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n');
@@ -92,7 +92,8 @@ describe('drawings and submittals', () => {
     const fake = await up('submittal.pdf', new TextEncoder().encode('not a pdf at all')); expect(fake.error).toMatch(/Refused/);
     const m = await (await fetch(base + '/api/model')).json();
     expect(m.documents[0]).toMatchObject({ name: 'Level 5 mechanical.pdf', mime: 'application/pdf', attachedTo: null });
-    const get = await fetch(base + `/api/documents/${r.artifact.sha256}`, { headers: as('viewer') });
+    expect((await fetch(base + `/api/documents/${r.artifact.sha256}`, { headers: as('viewer') })).status).toBe(403); // upload-only by default: a viewer cannot take originals out
+    const get = await fetch(base + `/api/documents/${r.artifact.sha256}`, { headers: as('tech') });
     expect(get.status).toBe(200); expect(get.headers.get('content-type')).toBe('application/pdf'); expect(get.headers.get('cache-control')).toBe('no-store');
     const closed = createEdge({ port: 0, openPreview: false }); const c = await closed.listen();
     expect((await fetch(`http://127.0.0.1:${c.port}/api/documents/${r.artifact.sha256}`)).status).toBe(403); await closed.close();
@@ -137,6 +138,36 @@ describe('intake with accountability', () => {
     const names = listZip(bytes).map((e) => e.name); expect(names).toContain('facts.json'); expect(names).toContain('receipts.json'); expect(names.some((n) => n.startsWith('artifacts/'))).toBe(true);
     const facts = JSON.parse(new TextDecoder().decode(readZipEntry(bytes, listZip(bytes).find((e) => e.name === 'facts.json')!)));
     expect(facts.assertions.length).toBeGreaterThan(50); expect(JSON.stringify(facts)).not.toContain('MATCH_ME_NEVER_PRINTED');
+    await edge.close();
+  });
+});
+
+describe('sources: watched folders, nested records, upload-only by default', () => {
+  it('ingests what appears in a watched folder, lifts a controller file out of a backup, and keeps downloads behind a grant', async () => {
+    const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+    const { zip, enc } = await import('../../../fixtures/synthetic/station.ts'); const { gfx } = await import('../../../fixtures/synthetic/controller.ts');
+    const folder = mkdtempSync(join(tmpdir(), 'atoll-watch-')); mkdirSync(join(folder, 'stations', 'JACE12'), { recursive: true });
+    // a supervisor-style station folder with a JACE backup that carries a .gfx along
+    const withGfx = zip([{ name: 'stations/JACE12/config.bog', data: (await import('../../../fixtures/synthetic/station.ts')).bog(stationXml({ devices: 2, pointsPerDevice: 4 })) }, { name: 'stations/JACE12/shared/programs/VAV_02.gfx', data: gfx({ name: 'VAV_02', instance: 2002 }) }, { name: 'readme.txt', data: enc('x') }]);
+    writeFileSync(join(folder, 'stations', 'JACE12', 'backup_JACE12.dist'), withGfx);
+    writeFileSync(join(folder, 'notes.txt'), 'not a record');
+    const edge = createEdge({ port: 0, sources: [{ label: 'Supervisor stations', path: folder, intervalMin: 60 }] }); const { port } = await edge.listen(); const base = `http://127.0.0.1:${port}`;
+    await new Promise((r) => setTimeout(r, 300));
+    const as = (user: string) => ({ 'x-atoll-user': user });
+    let m = await (await fetch(base + '/api/model')).json();
+    expect(m.atoll.sources.length).toBe(1); expect(m.atoll.scans[0].imported.length).toBe(1);
+    expect(m.artifacts.map((a: any) => a.kind).sort()).toEqual(['controller', 'station']);
+    expect(m.controllers[0].artifact.name).toMatch(/backup_JACE12.dist › VAV_02.gfx/); expect(m.controllers[0].matchedDevice).toBe('/Drivers/BacnetNetwork/VAV_02');
+    expect(m.receipts.some((r: any) => r.by === 'watch:Supervisor stations')).toBe(true);
+    // a second scan finds nothing new; a new file appears and is picked up
+    expect((await (await fetch(base + '/api/sources/scan', { method: 'POST', headers: as('admin') })).json()).scans[0].imported.length).toBe(0);
+    writeFileSync(join(folder, 'drawing.pdf'), '%PDF-1.4\n%%EOF\n');
+    await fetch(base + '/api/sources/scan', { method: 'POST', headers: as('admin') });
+    m = await (await fetch(base + '/api/model')).json(); expect(m.documents.length).toBe(1);
+    // upload is open to anyone who may import; download is a separate grant a viewer lacks
+    expect((await fetch(base + `/api/documents/${m.documents[0].sha256}`, { headers: as('viewer') })).status).toBe(403);
+    expect((await fetch(base + `/api/documents/${m.documents[0].sha256}`, { headers: as('tech') })).status).toBe(200);
+    expect((await fetch(base + '/api/sources', { method: 'POST', headers: as('tech'), body: JSON.stringify({ label: 'x', path: folder }) })).status).toBe(403);
     await edge.close();
   });
 });

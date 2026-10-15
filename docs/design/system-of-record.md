@@ -59,6 +59,25 @@ then stop re-engineering it.
 7. **Fleet, later.** A customer-owned cloud instance mirrors several sites'
    records (outbound only) for the owner who has many buildings.
 
+## Sources: every kind of record arrives several ways
+
+- **Uploaded** through the local web UI, which is an intake desk: anyone
+  who may import can drop files in; taking an original back out is a
+  separate grant (`artifacts.download`). Upload-only by default.
+- **Watched folders** on the machine Atoll runs on. On a supervisor, its
+  station folder is the one that matters: it holds the JACE backups that a
+  correctly configured provisioning job drops there, and a backup often
+  carries controller files and drawings along inside it, which become
+  records of their own. A backups share or a programs folder works the
+  same way. Scanned on a cadence; new content (by hash) becomes a receipt
+  attributed to the folder.
+- **Pulled from the devices**, where a platform documents a way to fetch a
+  backup or an export: each JACE directly when there is no supervisor, the
+  supervisor when there is one. Per platform, read-only, after legal
+  review of that vendor's terms. Phase 4.
+- **Read from the network**: what the devices say when asked, over
+  BACnet/IP today, other protocols later.
+
 ## Roadmap placement
 
 - Phase 3 adds: expected-artifact registry per site, delivery receipts,

@@ -141,3 +141,5 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
 .report { margin-bottom: 14px; }
 .report-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
 .report-text { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--radius); padding: 10px 12px; font: 12px/1.5 var(--mono); white-space: pre-wrap; max-height: 320px; overflow: auto; margin: 0; }
+
+.src-form { grid-template-columns: 1.2fr 2.4fr 1fr auto; }

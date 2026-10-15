@@ -15,8 +15,9 @@ import { EdgeModel } from './model.ts';
 import { Store } from './store.ts';
 import { renderReport } from './intake.ts';
 import { zipStored } from './zip.ts';
+import { scanFolder, type Source, type ScanResult } from './watch.ts';
 
-export interface EdgeOptions { port?: number; host?: string; simulate?: boolean; maxUploadBytes?: number; tickMs?: number; /** folder for the model log and encrypted artifacts; omitted = in memory only */ dataDir?: string; /** preview: an unidentified caller is the seeded site administrator (default true); false = anonymous, which can do nothing */ openPreview?: boolean; /** BACnet/IP read-only connector configuration; undefined = off */ bacnet?: BacnetConfig; /** site configuration (installed mode); the setup screen edits it and it is saved next to the data */ config?: AtollConfig }
+export interface EdgeOptions { port?: number; host?: string; simulate?: boolean; maxUploadBytes?: number; tickMs?: number; /** folder for the model log and encrypted artifacts; omitted = in memory only */ dataDir?: string; /** preview: an unidentified caller is the seeded site administrator (default true); false = anonymous, which can do nothing */ openPreview?: boolean; /** BACnet/IP read-only connector configuration; undefined = off */ bacnet?: BacnetConfig; /** site configuration (installed mode); the setup screen edits it and it is saved next to the data */ config?: AtollConfig; /** folders to scan when there is no config (preview) */ sources?: Source[] }
 const STATIC = (() => { try { return join(dirname(fileURLToPath(import.meta.url)), '..', 'static'); } catch { return 'static'; } })();
 // When packaged as a single executable, the UI files travel inside the binary as assets.
 let seaAsset: ((name: string) => Uint8Array | undefined) | undefined;
@@ -34,6 +35,21 @@ export function createEdge(opts: EdgeOptions = {}) {
   const clients = new Set<http.ServerResponse>();
   let session: Session | undefined; let unsubscribe: (() => void) | undefined;
   let bac: Session | undefined; let bacUnsub: (() => void) | undefined; let bacError: string | undefined; let bacDiscovered = 0;
+  // watched folders
+  const scans: ScanResult[] = []; let scanTimer: NodeJS.Timeout | undefined;
+  const sources = (): Source[] => opts.config?.sources ?? opts.sources ?? [];
+  const ingestAll = (name: string, bytes: Uint8Array, by: string) => {
+    const a = model.import(name, bytes, by); if (!store) model.documentBytes.set(a.sha256, bytes); if (store) store.putArtifact(a.sha256, a.name, bytes);
+    if (a.kind === 'station') for (const n of model.nestedArtifacts(bytes)) { try { const na = model.import(`${a.name} › ${n.name.split('/').pop()}`, n.bytes, by); if (!store) model.documentBytes.set(na.sha256, n.bytes); if (store) store.putArtifact(na.sha256, na.name, n.bytes); } catch { /* a nested file that does not parse is not a record */ } }
+    return a;
+  };
+  async function scanSources() {
+    const known = new Set(model.artifacts.map((a) => a.sha256));
+    for (const src of sources()) { const r = scanFolder(src, known, (name, bytes) => { ingestAll(`${src.label}/${name}`, bytes, `watch:${src.label}`); }); scans.unshift({ ...r, at: new Date().toISOString() } as ScanResult & { at: string }); if (scans.length > 50) scans.length = 50; if (r.imported.length) { await resubscribe(); broadcast('model', { changed: 'watch' }); } }
+    if (scanTimer) clearInterval(scanTimer);
+    const minutes = Math.max(1, Math.min(...sources().map((s) => s.intervalMin || 15), 1440));
+    if (sources().length) { scanTimer = setInterval(() => { void scanSources(); }, minutes * 60_000); scanTimer.unref?.(); }
+  }
   const bacnetCfg = () => (opts.config?.bacnet.enabled ? { port: opts.config.bacnet.port, bind: opts.config.bacnet.bind, broadcast: opts.config.bacnet.broadcast, pollMs: opts.config.bacnet.pollMs, targets: opts.config.bacnet.targets } : opts.bacnet);
   async function startBacnet() {
     bacUnsub?.(); bacUnsub = undefined; await bac?.close(); bac = undefined; bacError = undefined; bacDiscovered = 0;
@@ -73,7 +89,7 @@ export function createEdge(opts: EdgeOptions = {}) {
       if (req.method === 'GET' && url.pathname === '/api/me') { const p = whoIs(req); return json(res, 200, { principal: p, capabilities: capabilitiesAt(p), users: users.list().map((u) => ({ id: u.id, name: u.name, grants: u.grants })) }); }
       if (req.method === 'POST' && url.pathname === '/api/users') { const by = guard(req, 'admin.users'); let body = ''; for await (const ch of req) { body += ch; if (body.length > 64 * 1024) return json(res, 413, { error: 'too large' }); } let b: { id?: string; name?: string; grants?: any[] } = {}; try { b = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); } if (!b.id || !b.name || !Array.isArray(b.grants)) return json(res, 400, { error: 'id, name and grants are required' }); const u = users.set(b.id, b.name, b.grants, by); broadcast('model', { changed: 'users' }); return json(res, 200, { ok: true, user: u }); }
       if (req.method === 'GET' && url.pathname.startsWith('/api/documents/')) {
-        guard(req, 'model.read');
+        guard(req, 'artifacts.download');
         const sha = url.pathname.slice('/api/documents/'.length).replace(/\/.*$/, '');
         const d = model.documents.find((x) => x.sha256 === sha); if (!d) return json(res, 404, { error: 'unknown document' });
         const bytes = store?.getArtifact(sha) ?? model.documentBytes.get(sha); if (!bytes) return json(res, 404, { error: 'document bytes not available' });
@@ -89,17 +105,17 @@ export function createEdge(opts: EdgeOptions = {}) {
         const d = model.attachDocument(sha, b.entity ?? null, b.kind ?? 'drawing', who.name); if (!d) return json(res, 404, { error: 'unknown document or entity' });
         broadcast('model', { changed: 'documents' }); return json(res, 200, { ok: true, document: d });
       }
-      if (req.method === 'GET' && url.pathname === '/api/model') { guard(req, 'model.read'); return json(res, 200, { ...model.snapshot(), atoll: { name: 'Atoll preview', mode: 'local', storage: store ? `on disk · ${store.dir} · artifacts encrypted` : 'in-memory (preview)', replayedEvents: replayed, connectors: [...(opts.simulate ? [{ ...simulatedConnector.describe(), health: session?.health() ?? null }] : []), ...(bacnetCfg() ? [{ ...bacnetConnector.describe(), health: bac?.health() ?? null, error: bacError ?? null, discovered: bacDiscovered, config: { ...bacnetCfg() } }] : [])] }, config: opts.config ? { siteName: opts.config.siteName, setupDone: opts.config.setupDone, adminName: opts.config.adminName, simulate: opts.config.simulate, bacnet: opts.config.bacnet, dataDir: store?.dir ?? null } : null }); }
+      if (req.method === 'GET' && url.pathname === '/api/model') { guard(req, 'model.read'); return json(res, 200, { ...model.snapshot(), atoll: { name: 'Atoll preview', mode: 'local', storage: store ? `on disk · ${store.dir} · artifacts encrypted` : 'in-memory (preview)', replayedEvents: replayed, sources: sources(), scans: scans.slice(0, 10), connectors: [...(opts.simulate ? [{ ...simulatedConnector.describe(), health: session?.health() ?? null }] : []), ...(bacnetCfg() ? [{ ...bacnetConnector.describe(), health: bac?.health() ?? null, error: bacError ?? null, discovered: bacDiscovered, config: { ...bacnetCfg() } }] : [])] }, config: opts.config ? { siteName: opts.config.siteName, setupDone: opts.config.setupDone, adminName: opts.config.adminName, simulate: opts.config.simulate, bacnet: opts.config.bacnet, dataDir: store?.dir ?? null } : null }); }
       if (req.method === 'POST' && url.pathname === '/api/setup') {
         guard(req, 'admin.site');
         let body = ''; for await (const ch of req) { body += ch; if (body.length > 64 * 1024) return json(res, 413, { error: 'too large' }); }
         let b: Partial<AtollConfig> = {}; try { b = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
         if (!opts.config || !store) return json(res, 400, { error: 'setup is only available when Atoll runs with a data folder' });
-        const next: AtollConfig = { ...opts.config, ...b, bacnet: { ...opts.config.bacnet, ...(b.bacnet ?? {}) }, setupDone: true };
+        const next: AtollConfig = { ...opts.config, ...b, bacnet: { ...opts.config.bacnet, ...(b.bacnet ?? {}) }, sources: Array.isArray(b.sources) ? b.sources.map((x: any) => ({ label: String(x.label || x.path), path: String(x.path), intervalMin: Number(x.intervalMin) || 15 })) : opts.config.sources, setupDone: true };
         if (!next.siteName?.trim()) return json(res, 400, { error: 'a site name is required' });
         opts.config = next; saveConfig(store.dir, next); opts.simulate = next.simulate;
         if (next.adminName?.trim()) users.set('admin', next.adminName.trim(), [{ role: 'administrator', scope: '/' }], users.get('admin') ?? { id: 'admin', name: 'Site administrator', grants: [{ role: 'administrator', scope: '/' }] });
-        await resubscribe(); void startBacnet(); broadcast('model', { changed: 'setup' });
+        await resubscribe(); void startBacnet(); void scanSources(); broadcast('model', { changed: 'setup' });
         return json(res, 200, { ok: true, config: next });
       }
       if (req.method === 'POST' && url.pathname === '/api/expectations') {
@@ -109,6 +125,16 @@ export function createEdge(opts: EdgeOptions = {}) {
         const x = model.intake.setExpectation({ id: b.id, label: String(b.label), kind: b.kind, owedBy: String(b.owedBy), cadenceDays: b.cadenceDays === null || b.cadenceDays === undefined || b.cadenceDays === '' ? null : Number(b.cadenceDays), ...(b.match ? { match: String(b.match) } : {}) }, by.name);
         broadcast('model', { changed: 'expectations' }); return json(res, 200, { ok: true, expectation: x });
       }
+      if (req.method === 'POST' && url.pathname === '/api/sources') {
+        guard(req, 'record.intake'); let body = ''; for await (const ch of req) { body += ch; if (body.length > 64 * 1024) return json(res, 413, { error: 'too large' }); }
+        let b: any = {}; try { b = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
+        if (!b.path || !b.label) return json(res, 400, { error: 'label and path are required' });
+        const src: Source = { label: String(b.label), path: String(b.path), intervalMin: Number(b.intervalMin) || 15 };
+        if (opts.config && store) { opts.config.sources = [...opts.config.sources.filter((x) => x.path !== src.path), src]; saveConfig(store.dir, opts.config); } else { opts.sources = [...(opts.sources ?? []).filter((x) => x.path !== src.path), src]; }
+        await scanSources(); broadcast('model', { changed: 'sources' }); return json(res, 200, { ok: true, source: src, scan: scans[0] ?? null });
+      }
+      if (req.method === 'DELETE' && url.pathname.startsWith('/api/sources/')) { guard(req, 'record.intake'); const path = decodeURIComponent(url.pathname.slice('/api/sources/'.length)); if (opts.config && store) { opts.config.sources = opts.config.sources.filter((x) => x.path !== path); saveConfig(store.dir, opts.config); } else opts.sources = (opts.sources ?? []).filter((x) => x.path !== path); broadcast('model', { changed: 'sources' }); return json(res, 200, { ok: true }); }
+      if (req.method === 'POST' && url.pathname === '/api/sources/scan') { guard(req, 'record.intake'); await scanSources(); return json(res, 200, { ok: true, scans: scans.slice(0, 10) }); }
       if (req.method === 'DELETE' && url.pathname.startsWith('/api/expectations/')) { guard(req, 'record.intake'); model.intake.removeExpectation(decodeURIComponent(url.pathname.slice('/api/expectations/'.length))); broadcast('model', { changed: 'expectations' }); return json(res, 200, { ok: true }); }
       if (req.method === 'GET' && url.pathname === '/api/report') {
         guard(req, 'model.read'); const from = url.searchParams.get('from'), to = url.searchParams.get('to'); if (!from || !to) return json(res, 400, { error: 'from and to are required' });
@@ -154,7 +180,7 @@ export function createEdge(opts: EdgeOptions = {}) {
         const chunks: Buffer[] = []; let size = 0;
         for await (const ch of req) { size += (ch as Buffer).length; if (size > maxUpload) return json(res, 413, { error: `file exceeds ${maxUpload} bytes` }); chunks.push(ch as Buffer); }
         const bytes = new Uint8Array(Buffer.concat(chunks));
-        try { const a = model.import(name.split(/[\\/]/).pop() ?? name, bytes, whoIs(req).name); if (!store) model.documentBytes.set(a.sha256, bytes); if (store) { store.putArtifact(a.sha256, a.name, bytes); for (const old of store.listArtifacts()) if (!model.artifacts.some((x) => x.sha256 === old.sha256)) store.removeArtifact(old.sha256); } await resubscribe(); broadcast('model', { changed: a.name }); return json(res, 200, { ok: true, artifact: a }); }
+        try { const a = ingestAll(name.split(/[\\/]/).pop() ?? name, bytes, whoIs(req).name); if (store) for (const old of store.listArtifacts()) if (!model.artifacts.some((x) => x.sha256 === old.sha256)) store.removeArtifact(old.sha256); await resubscribe(); broadcast('model', { changed: a.name }); return json(res, 200, { ok: true, artifact: a }); }
         catch (e) { if (e instanceof Refused || e instanceof CapExceeded) return json(res, 422, { error: `${e.name}: ${e.message}` }); throw e; }
       }
       if (req.method === 'POST' && url.pathname === '/api/reset') { guard(req, 'admin.site'); model.reset(); store?.wipe(); unsubscribe?.(); unsubscribe = undefined; broadcast('model', { changed: null }); return json(res, 200, { ok: true }); }
@@ -175,8 +201,8 @@ export function createEdge(opts: EdgeOptions = {}) {
     } catch (e) { if (e instanceof Forbidden) return json(res, 403, { error: e.message, capability: e.capability, target: e.target }); return json(res, 500, { error: (e as Error).message }); }
   });
 
-  const listen = () => new Promise<{ port: number; host: string }>((resolve) => { server.listen(opts.port ?? 2865, opts.host ?? '127.0.0.1', () => { const a = server.address() as { port: number; address: string }; void startBacnet(); resolve({ port: a.port, host: a.address }); }); });
-  const close = async () => { unsubscribe?.(); bacUnsub?.(); await bac?.close(); await session?.close(); for (const c of clients) c.end(); await new Promise<void>((r) => server.close(() => r())); };
-  const preload = async (name: string, bytes: Uint8Array) => { const a = model.import(name, bytes); if (!store) model.documentBytes.set(a.sha256, bytes); if (store) { store.putArtifact(a.sha256, a.name, bytes); for (const old of store.listArtifacts()) if (!model.artifacts.some((x) => x.sha256 === old.sha256)) store.removeArtifact(old.sha256); } await resubscribe(); return a; };
+  const listen = () => new Promise<{ port: number; host: string }>((resolve) => { server.listen(opts.port ?? 2865, opts.host ?? '127.0.0.1', () => { const a = server.address() as { port: number; address: string }; void startBacnet(); void scanSources(); resolve({ port: a.port, host: a.address }); }); });
+  const close = async () => { if (scanTimer) clearInterval(scanTimer); unsubscribe?.(); bacUnsub?.(); await bac?.close(); await session?.close(); for (const c of clients) c.end(); await new Promise<void>((r) => server.close(() => r())); };
+  const preload = async (name: string, bytes: Uint8Array) => { const a = ingestAll(name, bytes, 'local'); if (store) { store.putArtifact(a.sha256, a.name, bytes); for (const old of store.listArtifacts()) if (!model.artifacts.some((x) => x.sha256 === old.sha256)) store.removeArtifact(old.sha256); } await resubscribe(); return a; };
   return { server, model, listen, close, preload };
 }

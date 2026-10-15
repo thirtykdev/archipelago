@@ -2,7 +2,7 @@
 import { correlate, refKey, sha256, Model, type NativeRef, type Reading, type Provenance, type DiscoveredNode } from '@archipelago/core';
 import { inspect, applyStation, type InspectReport } from '@archipelago/importer-station-file';
 import { parseControllerFile, type ControllerFile } from '@archipelago/importer-controller-file';
-import { listZip, sniff, Refused } from '@archipelago/importer-station-file';
+import { listZip, readZipEntry, sniff, Refused } from '@archipelago/importer-station-file';
 import { Intake, type ReportSummary } from './intake.ts';
 
 export interface Artifact { name: string; sha256: string; size: number; format: string; importedAt: string; kind: 'station' | 'controller' | 'document' }
@@ -100,6 +100,18 @@ export class EdgeModel {
     this.model.assert(cid, 'format', f.format, imp(a.name)); this.model.assert(cid, 'deviceInstance', f.deviceInstance ?? null, imp(a.name)); this.model.assert(cid, 'points', f.points.length, imp(a.name));
     this.model.snapshot(`import ${name}`, this.artifacts.map((x) => x.sha256));
     return a;
+  }
+
+  /** Files that ride along inside a backup archive and are records in their own right: controller files, drawings. */
+  nestedArtifacts(bytes: Uint8Array, max = 200): Array<{ name: string; bytes: Uint8Array }> {
+    if (sniff(bytes) !== 'zip') return [];
+    const out: Array<{ name: string; bytes: Uint8Array }> = []; const total = { bytes: 0 };
+    for (const e of listZip(bytes)) {
+      if (out.length >= max) break;
+      if (!/\.(gfx|caf|pdf|png|jpe?g|dxf|dwg|svg)$/i.test(e.name) || /PreEditBackup/i.test(e.name)) continue;
+      try { const b = readZipEntry(bytes, e, undefined, total); if (EdgeModel.documentType(b, e.name) || sniff(b) === 'zip' || sniff(b) === 'xml') out.push({ name: e.name, bytes: b }); } catch { /* skip an entry that does not read */ }
+    }
+    return out;
   }
 
   reset() { this.artifacts = []; this.station = undefined; this.controllers = []; this.readings.clear(); this.documentBytes.clear(); for (const e of this.model.live()) this.model.retire(e.id); }

@@ -6,6 +6,7 @@ export type Capability =
   | 'config.import'       // import engineering files
   | 'config.connectors'   // add, remove, configure connectors
   | 'config.theme'        // set the site's starting theme and identity
+  | 'artifacts.download'  // take an original artifact or drawing back out (upload is open to importers; download is a grant)
   | 'record.intake'       // declare what the site should have on file and who owes it
   | 'record.export'       // take the whole record out, including the original artifacts
   | 'points.write'        // command a point through a connector (separate by design; no connector implements it yet)
@@ -17,11 +18,11 @@ export type Role = 'viewer' | 'operator' | 'technician' | 'engineer' | 'administ
 export const ROLE_CAPABILITIES: Record<Role, Capability[]> = {
   viewer: ['model.read'],
   operator: ['model.read', 'questions.answer'],
-  technician: ['model.read', 'questions.answer', 'facts.confirm', 'config.import'],
-  engineer: ['model.read', 'questions.answer', 'facts.confirm', 'config.import', 'config.connectors', 'config.theme', 'record.intake', 'record.export'],
-  administrator: ['model.read', 'questions.answer', 'facts.confirm', 'config.import', 'config.connectors', 'config.theme', 'record.intake', 'record.export', 'admin.users', 'admin.site'],
+  technician: ['model.read', 'questions.answer', 'facts.confirm', 'config.import', 'artifacts.download'],
+  engineer: ['model.read', 'questions.answer', 'facts.confirm', 'config.import', 'artifacts.download', 'config.connectors', 'config.theme', 'record.intake', 'record.export'],
+  administrator: ['model.read', 'questions.answer', 'facts.confirm', 'config.import', 'artifacts.download', 'config.connectors', 'config.theme', 'record.intake', 'record.export', 'admin.users', 'admin.site'],
 };
-export const ALL_CAPABILITIES: Capability[] = ['model.read', 'questions.answer', 'facts.confirm', 'config.import', 'config.connectors', 'config.theme', 'record.intake', 'record.export', 'points.write', 'admin.users', 'admin.site'];
+export const ALL_CAPABILITIES: Capability[] = ['model.read', 'questions.answer', 'facts.confirm', 'config.import', 'artifacts.download', 'config.connectors', 'config.theme', 'record.intake', 'record.export', 'points.write', 'admin.users', 'admin.site'];
 
 /** A role held over a scope. Scope '/' is everything; any other scope is an entity path prefix. */
 export interface Grant { role: Role; scope: string; extra?: Capability[] }
