@@ -16,7 +16,10 @@ https://www.archipelago-project.org/roadmap/. In order:
    views, snapshot comparison and drift detection, web app with end-user
    theming (presets, color picker, light and dark, per-user saved themes,
    an administrator-set starting theme; see docs/design/theming.md), API,
-   MCP tools, signed and checksummed release.
+   MCP tools, signed and checksummed release. The system-of-record
+   increments: expected artifacts per site, delivery receipts and an
+   overdue list, change reports between snapshots, whole-record export
+   (see docs/design/system-of-record.md).
 4. More sources: Modbus TCP and RTU; Metasys `.caf`, Distech `.gfx`, Metasys
    SCT export, equipment schedules; an optional Niagara station connector
    after legal review.
