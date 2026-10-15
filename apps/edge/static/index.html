@@ -12,13 +12,14 @@
     <nav class="rail" aria-label="Sections">
       <div class="rail-brand"><img src="/mark.svg" alt="" width="22" height="22" /><span>Atoll</span><small>preview</small></div>
       <a href="#overview" data-nav="overview" class="is-current"><span class="k">01</span>Overview</a>
-      <a href="#devices" data-nav="devices"><span class="k">02</span>Devices</a>
-      <a href="#points" data-nav="points"><span class="k">03</span>Points</a>
-      <a href="#controllers" data-nav="controllers"><span class="k">04</span>Controllers</a>
-      <a href="#questions" data-nav="questions"><span class="k">05</span>Questions <b class="count" data-qcount>0</b></a>
-      <a href="#changes" data-nav="changes"><span class="k">06</span>Changes</a>
-      <a href="#documents" data-nav="documents"><span class="k">07</span>Drawings</a>
-      <a href="#artifacts" data-nav="artifacts"><span class="k">08</span>Artifacts</a>
+      <a href="#intake" data-nav="intake"><span class="k">02</span>Intake <b class="count" data-ocount>0</b></a>
+      <a href="#devices" data-nav="devices"><span class="k">03</span>Devices</a>
+      <a href="#points" data-nav="points"><span class="k">04</span>Points</a>
+      <a href="#controllers" data-nav="controllers"><span class="k">05</span>Controllers</a>
+      <a href="#questions" data-nav="questions"><span class="k">06</span>Questions <b class="count" data-qcount>0</b></a>
+      <a href="#changes" data-nav="changes"><span class="k">07</span>Changes</a>
+      <a href="#documents" data-nav="documents"><span class="k">08</span>Drawings</a>
+      <a href="#artifacts" data-nav="artifacts"><span class="k">09</span>Artifacts</a>
       <div class="rail-foot">
         <label class="who"><span class="lab">acting as</span><select data-user></select></label>
         <div class="caps mono" data-caps></div>
@@ -32,12 +33,14 @@
         <div class="crumbs"><span data-site>No station imported</span></div>
         <div class="top-actions">
           <label class="btn btn-primary file-btn" data-needs="config.import">Import files<input type="file" multiple data-file-input /></label>
+          <a class="btn" href="/api/export" data-needs="record.export" download>Export the record</a>
           <button type="button" class="btn" data-reset data-needs="admin.site">Reset</button>
         </div>
       </header>
       <div class="drop" data-drop hidden><div>Drop station backups (.bog, .dist), controller files (.caf, .gfx), drawings and submittals (.pdf, .png, .dxf, .dwg) here</div></div>
       <section class="view" data-view="setup" hidden></section>
       <section class="view" data-view="overview"></section>
+      <section class="view" data-view="intake" hidden></section>
       <section class="view" data-view="devices" hidden></section>
       <section class="view" data-view="points" hidden></section>
       <section class="view" data-view="controllers" hidden></section>

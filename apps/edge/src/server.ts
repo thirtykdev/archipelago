@@ -13,6 +13,8 @@ import { loadConfig, saveConfig, type AtollConfig } from './config.ts';
 import { readFileSync as rfs } from 'node:fs';
 import { EdgeModel } from './model.ts';
 import { Store } from './store.ts';
+import { renderReport } from './intake.ts';
+import { zipStored } from './zip.ts';
 
 export interface EdgeOptions { port?: number; host?: string; simulate?: boolean; maxUploadBytes?: number; tickMs?: number; /** folder for the model log and encrypted artifacts; omitted = in memory only */ dataDir?: string; /** preview: an unidentified caller is the seeded site administrator (default true); false = anonymous, which can do nothing */ openPreview?: boolean; /** BACnet/IP read-only connector configuration; undefined = off */ bacnet?: BacnetConfig; /** site configuration (installed mode); the setup screen edits it and it is saved next to the data */ config?: AtollConfig }
 const STATIC = (() => { try { return join(dirname(fileURLToPath(import.meta.url)), '..', 'static'); } catch { return 'static'; } })();
@@ -100,6 +102,37 @@ export function createEdge(opts: EdgeOptions = {}) {
         await resubscribe(); void startBacnet(); broadcast('model', { changed: 'setup' });
         return json(res, 200, { ok: true, config: next });
       }
+      if (req.method === 'POST' && url.pathname === '/api/expectations') {
+        const by = guard(req, 'record.intake'); let body = ''; for await (const ch of req) { body += ch; if (body.length > 64 * 1024) return json(res, 413, { error: 'too large' }); }
+        let b: any = {}; try { b = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
+        if (!b.label || !b.kind || !b.owedBy) return json(res, 400, { error: 'label, kind and owedBy are required' });
+        const x = model.intake.setExpectation({ id: b.id, label: String(b.label), kind: b.kind, owedBy: String(b.owedBy), cadenceDays: b.cadenceDays === null || b.cadenceDays === undefined || b.cadenceDays === '' ? null : Number(b.cadenceDays), ...(b.match ? { match: String(b.match) } : {}) }, by.name);
+        broadcast('model', { changed: 'expectations' }); return json(res, 200, { ok: true, expectation: x });
+      }
+      if (req.method === 'DELETE' && url.pathname.startsWith('/api/expectations/')) { guard(req, 'record.intake'); model.intake.removeExpectation(decodeURIComponent(url.pathname.slice('/api/expectations/'.length))); broadcast('model', { changed: 'expectations' }); return json(res, 200, { ok: true }); }
+      if (req.method === 'GET' && url.pathname === '/api/report') {
+        guard(req, 'model.read'); const from = url.searchParams.get('from'), to = url.searchParams.get('to'); if (!from || !to) return json(res, 400, { error: 'from and to are required' });
+        let r; try { r = model.intake.report(from, to); } catch (e) { return json(res, 404, { error: (e as Error).message }); }
+        const lab = (id: string) => { const sn = model.model.snapshots.find((x) => x.id === id); return sn ? `${sn.label} · ${sn.at.slice(0, 19).replace('T', ' ')}` : id; };
+        if (url.searchParams.get('format') === 'text') { res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'content-security-policy': CSP, 'cache-control': 'no-store', 'content-disposition': `attachment; filename="change-report-${from.slice(0, 8)}-${to.slice(0, 8)}.txt"` }); return res.end(renderReport(r, { from: lab(from), to: lab(to) })); }
+        return json(res, 200, { ...r, text: renderReport(r, { from: lab(from), to: lab(to) }) });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/export') {
+        guard(req, 'record.export');
+        const enc = (s: string) => new TextEncoder().encode(s);
+        const m = model.model;
+        const facts = { exportedAt: new Date().toISOString(), site: opts.config?.siteName ?? null, entities: [...m.entities.values()], assertions: [...m.assertions.values()], supersededBy: Object.fromEntries(m.supersededBy), retired: [...m.retired], snapshots: m.snapshots };
+        const entries: Array<{ name: string; data: Uint8Array }> = [
+          { name: 'README.txt', data: enc(`Archipelago record export\n\nfacts.json         every entity and assertion with its provenance, the supersede chains, retired ids, snapshots\nreceipts.json      every delivery: who, when, hash, size, what changed\nexpectations.json  what the site is expected to have on file and who owes it\nartifacts/         the original files exactly as delivered, named <sha256>-<name>\n\nNothing in this archive depends on Archipelago to be read.\n`) },
+          { name: 'facts.json', data: enc(JSON.stringify(facts, null, 2)) },
+          { name: 'receipts.json', data: enc(JSON.stringify(model.intake.receipts(), null, 2)) },
+          { name: 'expectations.json', data: enc(JSON.stringify(model.intake.expectations(), null, 2)) },
+        ];
+        for (const a of model.artifacts) { const bytes = store?.getArtifact(a.sha256) ?? model.documentBytes.get(a.sha256); if (bytes) entries.push({ name: `artifacts/${a.sha256.slice(0, 12)}-${a.name.replace(/[^\w.\- ]/g, '_')}`, data: bytes }); }
+        const zip = zipStored(entries);
+        res.writeHead(200, { 'content-type': 'application/zip', 'content-length': String(zip.length), 'content-security-policy': CSP, 'cache-control': 'no-store', 'content-disposition': `attachment; filename="archipelago-record-${new Date().toISOString().slice(0, 10)}.zip"` });
+        return res.end(Buffer.from(zip));
+      }
       if (req.method === 'GET' && url.pathname === '/api/diff') { guard(req, 'model.read'); const from = url.searchParams.get('from'), to = url.searchParams.get('to'); if (!from || !to) return json(res, 400, { error: 'from and to are required' }); try { return json(res, 200, model.model.diff(from, to)); } catch (e) { return json(res, 404, { error: (e as Error).message }); } }
       if (req.method === 'GET' && url.pathname.startsWith('/api/facts/')) { guard(req, 'model.read'); const id = decodeURIComponent(url.pathname.slice('/api/facts/'.length)); const e = model.model.entities.get(id); if (!e) return json(res, 404, { error: 'unknown entity' }); return json(res, 200, { entity: e, facts: model.model.facts(id).map((a) => ({ ...a, history: model.model.history(id, a.key).length })) }); }
       if (req.method === 'POST' && url.pathname.startsWith('/api/questions/')) {
@@ -121,7 +154,7 @@ export function createEdge(opts: EdgeOptions = {}) {
         const chunks: Buffer[] = []; let size = 0;
         for await (const ch of req) { size += (ch as Buffer).length; if (size > maxUpload) return json(res, 413, { error: `file exceeds ${maxUpload} bytes` }); chunks.push(ch as Buffer); }
         const bytes = new Uint8Array(Buffer.concat(chunks));
-        try { const a = model.import(name.split(/[\\/]/).pop() ?? name, bytes); if (a.kind === 'document' && !store) model.documentBytes.set(a.sha256, bytes); if (store) { store.putArtifact(a.sha256, a.name, bytes); for (const old of store.listArtifacts()) if (!model.artifacts.some((x) => x.sha256 === old.sha256)) store.removeArtifact(old.sha256); } await resubscribe(); broadcast('model', { changed: a.name }); return json(res, 200, { ok: true, artifact: a }); }
+        try { const a = model.import(name.split(/[\\/]/).pop() ?? name, bytes, whoIs(req).name); if (!store) model.documentBytes.set(a.sha256, bytes); if (store) { store.putArtifact(a.sha256, a.name, bytes); for (const old of store.listArtifacts()) if (!model.artifacts.some((x) => x.sha256 === old.sha256)) store.removeArtifact(old.sha256); } await resubscribe(); broadcast('model', { changed: a.name }); return json(res, 200, { ok: true, artifact: a }); }
         catch (e) { if (e instanceof Refused || e instanceof CapExceeded) return json(res, 422, { error: `${e.name}: ${e.message}` }); throw e; }
       }
       if (req.method === 'POST' && url.pathname === '/api/reset') { guard(req, 'admin.site'); model.reset(); store?.wipe(); unsubscribe?.(); unsubscribe = undefined; broadcast('model', { changed: null }); return json(res, 200, { ok: true }); }
@@ -144,6 +177,6 @@ export function createEdge(opts: EdgeOptions = {}) {
 
   const listen = () => new Promise<{ port: number; host: string }>((resolve) => { server.listen(opts.port ?? 2865, opts.host ?? '127.0.0.1', () => { const a = server.address() as { port: number; address: string }; void startBacnet(); resolve({ port: a.port, host: a.address }); }); });
   const close = async () => { unsubscribe?.(); bacUnsub?.(); await bac?.close(); await session?.close(); for (const c of clients) c.end(); await new Promise<void>((r) => server.close(() => r())); };
-  const preload = async (name: string, bytes: Uint8Array) => { const a = model.import(name, bytes); if (a.kind === 'document' && !store) model.documentBytes.set(a.sha256, bytes); if (store) { store.putArtifact(a.sha256, a.name, bytes); for (const old of store.listArtifacts()) if (!model.artifacts.some((x) => x.sha256 === old.sha256)) store.removeArtifact(old.sha256); } await resubscribe(); return a; };
+  const preload = async (name: string, bytes: Uint8Array) => { const a = model.import(name, bytes); if (!store) model.documentBytes.set(a.sha256, bytes); if (store) { store.putArtifact(a.sha256, a.name, bytes); for (const old of store.listArtifacts()) if (!model.artifacts.some((x) => x.sha256 === old.sha256)) store.removeArtifact(old.sha256); } await resubscribe(); return a; };
   return { server, model, listen, close, preload };
 }

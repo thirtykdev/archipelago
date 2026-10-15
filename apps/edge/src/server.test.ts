@@ -104,3 +104,39 @@ describe('drawings and submittals', () => {
     await edge.close();
   });
 });
+
+describe('intake with accountability', () => {
+  it('declares what is owed, receipts every delivery with a controls-language diff, lists what is late, and exports the record', async () => {
+    const edge = createEdge({ port: 0 }); const { port } = await edge.listen(); const base = `http://127.0.0.1:${port}`;
+    const as = (user: string) => ({ 'x-atoll-user': user });
+    const up = async (name: string, bytes: Uint8Array, user = 'tech') => (await fetch(base + '/api/import', { method: 'POST', headers: { 'x-filename': name, ...as(user) }, body: new Blob([bytes as unknown as BlobPart]) })).json();
+    expect((await fetch(base + '/api/expectations', { method: 'POST', headers: as('viewer'), body: JSON.stringify({ label: 'x', kind: 'station-backup', owedBy: 'y' }) })).status).toBe(403);
+    const exp = await (await fetch(base + '/api/expectations', { method: 'POST', headers: as('admin'), body: JSON.stringify({ label: 'JACE 12 monthly backup', kind: 'station-backup', owedBy: 'Contractor LLC', cadenceDays: 30 }) })).json();
+    expect(exp.expectation).toMatchObject({ kind: 'station-backup', owedBy: 'Contractor LLC', cadenceDays: 30, createdBy: 'Site administrator' });
+    await (await fetch(base + '/api/expectations', { method: 'POST', headers: as('admin'), body: JSON.stringify({ label: 'AHU-3 controller file', kind: 'controller-file', owedBy: 'Contractor LLC', cadenceDays: null, match: 'AHU' }) })).json();
+    let m = await (await fetch(base + '/api/model')).json();
+    expect(m.overdue.map((o: any) => o.status)).toEqual(['never', 'never']);
+    await up('backup_jace12.dist', dist(stationXml({ devices: 2, pointsPerDevice: 6 })));
+    m = await (await fetch(base + '/api/model')).json();
+    expect(m.receipts[0]).toMatchObject({ name: 'backup_jace12.dist', by: 'Technician', expectation: exp.expectation.id, onTime: true });
+    expect(m.receipts[0].summary).toBeUndefined();
+    // a later backup: a setpoint moved, alarms inhibited on VAV_02, a high limit changed, VAV_02 renamed
+    await up('backup_jace12.dist', dist(stationXml({ devices: 2, pointsPerDevice: 6, tweak: (d) => d === 'VAV_02' ? { fallback: { DPR_O: '45.0' }, inhibitAlarms: true, highLimit: '80.0', renameTo: 'VAV_02_RELO' } : {} })));
+    m = await (await fetch(base + '/api/model')).json();
+    const r = m.receipts[0]; expect(r.previous).toBeDefined(); expect(r.summary.lines.length).toBeGreaterThan(0);
+    const kinds = r.summary.counts; expect(kinds.setpoint).toBe(1); expect(kinds['alarm-disabled']).toBe(2); expect(kinds['alarm-limit']).toBe(1); expect(kinds.renamed).toBeGreaterThanOrEqual(1);
+    expect(r.summary.lines.find((l: any) => l.kind === 'setpoint').text).toMatch(/DPR_O: setpoint 30.0 → 45.0/);
+    const txt = await (await fetch(base + `/api/report?from=${r.summary.from}&to=${r.summary.to}&format=text`)).text();
+    expect(txt).toMatch(/Setpoints changed \(1\)/); expect(txt).toMatch(/Alarms inhibited \(2\)/);
+    expect(m.overdue.find((o: any) => o.expectation.kind === 'station-backup').status).toBe('ok');
+    expect(m.overdue.find((o: any) => o.expectation.kind === 'controller-file').status).toBe('never');
+    expect((await fetch(base + '/api/export', { headers: as('viewer') })).status).toBe(403);
+    const z = await fetch(base + '/api/export', { headers: as('admin') }); expect(z.status).toBe(200); expect(z.headers.get('content-type')).toBe('application/zip');
+    const bytes = new Uint8Array(await z.arrayBuffer()); expect(bytes[0]).toBe(0x50); expect(bytes[1]).toBe(0x4b);
+    const { listZip, readZipEntry } = await import('@archipelago/importer-station-file');
+    const names = listZip(bytes).map((e) => e.name); expect(names).toContain('facts.json'); expect(names).toContain('receipts.json'); expect(names.some((n) => n.startsWith('artifacts/'))).toBe(true);
+    const facts = JSON.parse(new TextDecoder().decode(readZipEntry(bytes, listZip(bytes).find((e) => e.name === 'facts.json')!)));
+    expect(facts.assertions.length).toBeGreaterThan(50); expect(JSON.stringify(facts)).not.toContain('MATCH_ME_NEVER_PRINTED');
+    await edge.close();
+  });
+});

@@ -134,3 +134,10 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
 .setup-actions { display: flex; align-items: center; gap: 12px; }
 .conn { padding: 8px 0; border-bottom: 1px solid var(--line-2); display: grid; gap: 4px; }
 .conn:last-child { border-bottom: 0; }
+
+.exp-form { display: grid; grid-template-columns: 2fr 1fr 1.3fr 1fr 1.3fr auto; gap: 8px; border-top: 1px solid var(--line-2); }
+.exp-form input, .exp-form select { padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--ink); font-size: 12.5px; min-width: 0; }
+@media (max-width: 1100px) { .exp-form { grid-template-columns: 1fr 1fr; } }
+.report { margin-bottom: 14px; }
+.report-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.report-text { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--radius); padding: 10px 12px; font: 12px/1.5 var(--mono); white-space: pre-wrap; max-height: 320px; overflow: auto; margin: 0; }

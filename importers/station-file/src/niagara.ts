@@ -6,8 +6,8 @@ import { child, walk } from './graph.ts';
 
 export interface Device { name: string; path: string; type: string; driver: string; instance?: number; address?: string; points: number }
 export interface Network { name: string; path: string; type: string; driver: string; devices: number }
-export interface Point { name: string; path: string; kind: PointKind; writable: boolean; units?: string; device?: string; binding?: BindingHint['ref'] & { connector: string }; histories: string[]; alarms: string[] }
-export interface Extension { path: string; type: string; kind: 'history' | 'alarm'; algorithm?: string; point: string }
+export interface Point { name: string; path: string; kind: PointKind; writable: boolean; units?: string; device?: string; binding?: BindingHint['ref'] & { connector: string }; histories: string[]; alarms: string[]; /** a writable point's fallback value: the setpoint the station holds when nothing else commands it */ fallback?: string }
+export interface Extension { path: string; type: string; kind: 'history' | 'alarm'; algorithm?: string; point: string; enabled?: boolean; inhibited?: boolean; highLimit?: string; lowLimit?: string; alarmClass?: string }
 export interface StationModel {
   stationName: string;
   version: string;
@@ -81,6 +81,7 @@ export function mapStation(g: Graph, artifact: string): StationModel {
     if (pt) {
       const p: Point = { name: n.name, path: n.path, kind: pt[0], writable: pt[1], histories: [], alarms: [] };
       const u = facetsUnits(child(n, 'facets')?.value); if (u) p.units = u;
+      const fb = child(n, 'fallback')?.value; if (pt[1] && fb !== undefined) p.fallback = fb;
       if (d) { p.device = d.path; d.points++; }
       const proxy = child(n, 'proxyExt');
       if (proxy?.type?.startsWith('bacnet:') && d?.instance !== undefined) {
@@ -89,8 +90,9 @@ export function mapStation(g: Graph, artifact: string): StationModel {
       }
       for (const c of n.children) {
         const ct = c.type; if (!ct) continue;
-        if (/HistoryExt$/.test(ct)) { m.extensions.push({ path: c.path, type: ct, kind: 'history', point: n.path }); p.histories.push(c.name); }
-        else if (ct.startsWith('alarm:') && /Ext$/.test(ct)) { const alg = child(c, 'offnormalAlgorithm')?.type; m.extensions.push({ path: c.path, type: ct, kind: 'alarm', point: n.path, ...(alg ? { algorithm: alg } : {}) }); p.alarms.push(c.name); }
+        const flag = (name: string) => { const v = child(c, name)?.value; return v === undefined ? undefined : v === 'true'; };
+        if (/HistoryExt$/.test(ct)) { const en = flag('enabled'); m.extensions.push({ path: c.path, type: ct, kind: 'history', point: n.path, ...(en !== undefined ? { enabled: en } : {}) }); p.histories.push(c.name); }
+        else if (ct.startsWith('alarm:') && /Ext$/.test(ct)) { const algN = child(c, 'offnormalAlgorithm'); const alg = algN?.type; const hi = algN ? child(algN, 'highLimit')?.value : undefined; const lo = algN ? child(algN, 'lowLimit')?.value : undefined; const inh = flag('alarmInhibit'); const cls = child(c, 'alarmClass')?.value; m.extensions.push({ path: c.path, type: ct, kind: 'alarm', point: n.path, ...(alg ? { algorithm: alg } : {}), ...(hi !== undefined ? { highLimit: hi } : {}), ...(lo !== undefined ? { lowLimit: lo } : {}), ...(inh !== undefined ? { inhibited: inh } : {}), ...(cls ? { alarmClass: cls } : {}) }); p.alarms.push(c.name); }
       }
       m.points.push(p);
       void imported; // provenance is attached when assertions are emitted; inspect reports structure only

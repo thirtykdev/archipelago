@@ -12,6 +12,7 @@ describe('authorization', () => {
   it('writes to a building are never implied by a role', () => { expect(can(admin, 'points.write')).toBe(false); expect(can({ ...admin, grants: [{ role: 'administrator', scope: '/', extra: ['points.write'] }] }, 'points.write')).toBe(true); });
   it('anonymous can do nothing, and the throwing form names what was missing', () => {
     expect(capabilitiesAt(ANONYMOUS)).toEqual([]);
+    expect(can(admin, 'record.export')).toBe(true); expect(can(night, 'record.intake')).toBe(false);
     expect(() => requireCapability(night, 'admin.users')).toThrow(Forbidden);
     try { requireCapability(night, 'config.import', '/x'); } catch (e) { expect((e as Forbidden).message).toBe('night operator lacks config.import on /x'); }
   });

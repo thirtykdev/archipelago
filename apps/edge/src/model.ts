@@ -3,6 +3,7 @@ import { correlate, refKey, sha256, Model, type NativeRef, type Reading, type Pr
 import { inspect, applyStation, type InspectReport } from '@archipelago/importer-station-file';
 import { parseControllerFile, type ControllerFile } from '@archipelago/importer-controller-file';
 import { listZip, sniff, Refused } from '@archipelago/importer-station-file';
+import { Intake, type ReportSummary } from './intake.ts';
 
 export interface Artifact { name: string; sha256: string; size: number; format: string; importedAt: string; kind: 'station' | 'controller' | 'document' }
 export interface Document { sha256: string; name: string; mime: string; size: number; importedAt: string; kind: string; attachedTo: string | null; attachedToName?: string; by?: string }
@@ -11,11 +12,12 @@ export interface Question { id: string; subject: string; text: string; evidence:
 
 export class EdgeModel {
   readonly model = new Model();
+  readonly intake = new Intake(this.model);
   artifacts: Artifact[] = [];
   station: InspectReport | undefined;
   controllers: ControllerEntry[] = [];
   readings = new Map<string, Reading>();
-  /** document bytes when running without a store (preview, in memory) */
+  /** artifact bytes when running without a store (preview, in memory) */
   documentBytes = new Map<string, Uint8Array>();
 
   /** Drawings, submittals, sheets: recognised by content, kept as artifacts, attachable to entities. */
@@ -63,7 +65,17 @@ export class EdgeModel {
     throw new Refused('zip is neither a station file nor a controller file');
   }
 
-  import(name: string, bytes: Uint8Array): Artifact {
+  import(name: string, bytes: Uint8Array, by = 'local'): Artifact {
+    const before = this.model.snapshots[this.model.snapshots.length - 1];
+    const a = this.importInner(name, bytes);
+    const after = this.model.snapshots[this.model.snapshots.length - 1];
+    let summary: ReportSummary | undefined;
+    if (a.kind === 'station' && before && after && before.id !== after.id) summary = this.intake.report(before.id, after.id);
+    const receipt = this.intake.record({ at: a.importedAt, by, name: a.name, sha256: a.sha256, size: a.size, artifactKind: a.kind, ...(summary ? { summary } : {}) });
+    void receipt;
+    return a;
+  }
+  private importInner(name: string, bytes: Uint8Array): Artifact {
     const kind = this.classify(bytes, name);
     const base = { name, sha256: sha256(bytes), size: bytes.length, importedAt: new Date().toISOString(), kind };
     if (kind === 'document') {
@@ -176,6 +188,9 @@ export class EdgeModel {
       station: s ? { ...s.station, artifact: s.artifact, coverage: s.coverage, redactions: s.redactions, handles: s.handles, elapsedMs: s.elapsedMs } : null,
       controllers: this.controllers.map((c) => ({ artifact: c.artifact, deviceName: c.file.deviceName, deviceInstance: c.file.deviceInstance ?? null, format: c.file.format, confidence: c.file.confidence, points: c.file.points, warnings: c.file.warnings, unknownObjectTypes: c.file.unknownObjectTypes, matchedDevice: c.matchedDevice ?? null, correlation: c.correlation })),
       questions: this.questions(true),
+      expectations: this.intake.expectations(),
+      receipts: this.intake.receipts().slice().reverse(),
+      overdue: this.intake.overdue(),
       snapshots: this.model.snapshots.map((x) => ({ id: x.id, at: x.at, label: x.label, entities: x.entityIds.length, assertions: x.assertionIds.length })),
       diff: this.model.snapshots.length >= 2 ? this.model.diff(this.model.snapshots[this.model.snapshots.length - 2]!.id, this.model.snapshots[this.model.snapshots.length - 1]!.id) : null,
       model: { entities: this.model.live().length, assertions: this.model.assertions.size, superseded: this.model.supersededBy.size },

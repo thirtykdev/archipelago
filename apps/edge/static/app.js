@@ -69,9 +69,36 @@ function render() {
   const s = m.station;
   $('[data-site]').innerHTML = s ? `${esc(s.stationName || 'station')} <span class="muted">· ${s.artifact.format} · ${s.components} components</span>` : 'No station imported';
   const open = m.questions.filter((q) => !q.answered); const qc = $('[data-qcount]'); qc.textContent = open.length; qc.toggleAttribute('data-zero', !open.length);
+  const late = (m.overdue || []).filter((o) => o.status === 'late' || o.status === 'never'); const oc = $('[data-ocount]'); oc.textContent = late.length; oc.toggleAttribute('data-zero', !late.length);
   $('[data-status]').textContent = `${m.artifacts.length} artifact${m.artifacts.length === 1 ? '' : 's'} · ${m.model.entities} entities · ${m.model.assertions} facts (${m.model.superseded} superseded) · ${m.snapshots.length} snapshots · ${Object.keys(m.readings).length} live values · ${m.atoll.storage}`;
   renderConn();
-  ({ overview, devices, points, controllers, questions, changes, documents, artifacts, setup })[state.view]?.();
+  ({ overview, intake, devices, points, controllers, questions, changes, documents, artifacts, setup })[state.view]?.();
+
+  function summaryHtml(sm) {
+    if (!sm) return '<span class="muted">first delivery · nothing to compare</span>';
+    const t = { setpoint: 'setpoints', 'alarm-disabled': 'alarms inhibited', 'alarm-enabled': 'alarms re-enabled', 'alarm-limit': 'limits', 'history-disabled': 'histories off', 'history-enabled': 'histories on', removed: 'removed', added: 'added', renamed: 'renamed', rebound: 'readdressed', other: 'other' };
+    const parts = Object.entries(sm.counts).map(([k, n]) => `<span class="tag ${/disabled|removed/.test(k) ? 'tag-w' : ''}">${n} ${t[k] ?? k}</span>`);
+    return parts.length ? parts.join('') + ` <a href="/api/report?from=${sm.from}&to=${sm.to}&format=text" download>report</a>` : '<span class="muted">no change</span>';
+  }
+  function intake() {
+    const v = $('[data-view="intake"]');
+    const ex = m.expectations || [], rs = m.receipts || [], od = m.overdue || [];
+    const kinds = ['station-backup', 'controller-file', 'drawing', 'submittal', 'sequence', 'commissioning-report', 'other'];
+    const status = (o) => o.status === 'late' ? `<span class="prov prov-question">${o.daysLate} days late</span>` : o.status === 'never' ? `<span class="prov prov-question">never delivered${o.daysLate ? ' · ' + o.daysLate + ' days' : ''}</span>` : o.status === 'ok' ? `<span class="prov prov-observed">on file${o.dueAt ? ' · due ' + o.dueAt.slice(0, 10) : ''}</span>` : '<span class="muted">on file</span>';
+    v.innerHTML = `
+      <div class="panel"><div class="panel-head"><div><h3>What this site should have on file · ${ex.length}</h3><span class="muted">Declare it once. Every delivery that matches becomes a receipt against it; what is late is visible. The ledger protects the contractor as much as the owner.</span></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Expected</th><th>Kind</th><th>Owed by</th><th>Cadence</th><th>Status</th><th>Last delivery</th>${may('record.intake') ? '<th></th>' : ''}</tr></thead><tbody>
+        ${od.map((o) => `<tr><td><b>${esc(o.expectation.label)}</b>${o.expectation.match ? ` <span class="mono muted">matches "${esc(o.expectation.match)}"</span>` : ''}</td><td class="mono">${esc(o.expectation.kind)}</td><td>${esc(o.expectation.owedBy)}</td><td class="mono">${o.expectation.cadenceDays ? 'every ' + o.expectation.cadenceDays + ' d' : 'once'}</td><td>${status(o)}</td><td class="mono">${o.lastDelivery ? esc(o.lastDelivery.at.slice(0, 10)) + ' · ' + esc(o.lastDelivery.by) : '—'}</td>${may('record.intake') ? `<td><button type="button" class="btn btn-sm" data-del="${esc(o.expectation.id)}">remove</button></td>` : ''}</tr>`).join('') || `<tr><td colspan="7" class="empty">Nothing declared yet.</td></tr>`}
+        </tbody></table></div>
+        ${may('record.intake') ? `<form class="panel-body exp-form" data-exp><input name="label" placeholder="What is owed, e.g. JACE 12 monthly backup" required /><select name="kind">${kinds.map((k) => `<option>${k}</option>`).join('')}</select><input name="owedBy" placeholder="Owed by, e.g. Contractor LLC" required /><input name="cadenceDays" type="number" min="1" placeholder="every N days (blank = once)" /><input name="match" placeholder="name match (optional), e.g. jace12 or /AHU-?3/" /><button class="btn btn-primary btn-sm" type="submit">Add</button></form>` : ''}
+      </div>
+      <div class="panel"><div class="panel-head"><div><h3>Receipts · ${rs.length}</h3><span class="muted">Every delivery: who, when, hash, size, and what changed since the previous version of the same thing.</span></div></div>
+        <div class="table-wrap"><table><thead><tr><th>When</th><th>Delivered by</th><th>Artifact</th><th class="mono">SHA-256</th><th>Against</th><th>What changed</th></tr></thead><tbody>
+        ${rs.map((r) => `<tr><td class="mono">${esc(r.at.slice(0, 16).replace('T', ' '))}</td><td>${esc(r.by)}</td><td><b>${esc(r.name)}</b> <span class="kind">${r.artifactKind}</span></td><td class="mono">${r.sha256.slice(0, 12)}…</td><td>${r.expectation ? `${esc(ex.find((x) => x.id === r.expectation)?.label ?? r.expectation)} ${r.onTime === true ? '<span class="prov prov-observed">on time</span>' : r.onTime === false ? '<span class="prov prov-question">late</span>' : ''}` : '<span class="muted">nothing declared</span>'}</td><td>${summaryHtml(r.summary)}</td></tr>`).join('') || `<tr><td colspan="6" class="empty">No deliveries yet. Import a file and it becomes a receipt.</td></tr>`}
+        </tbody></table></div></div>`;
+    $('[data-exp]', v)?.addEventListener('submit', async (e) => { e.preventDefault(); const f = new FormData(e.target); const body = Object.fromEntries(f.entries()); if (!body.cadenceDays) body.cadenceDays = null; const r = await fetch('/api/expectations', { method: 'POST', body: JSON.stringify(body) }); const j = await r.json(); if (!r.ok) toast(j.error, true); else toast(`Declared: ${j.expectation.label}`); });
+    $$('[data-del]', v).forEach((b) => b.addEventListener('click', async () => { await fetch(`/api/expectations/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' }); }));
+  }
 
   function setup() {
     const v = $('[data-view="setup"]'); const c = m.config;
@@ -111,6 +138,7 @@ function render() {
         ${tile(m.controllers.length, 'controller files', `${m.controllers.filter((c) => c.matchedDevice).length} matched to a device`)}
         ${tile(missing, 'not in the station', 'exposed by controllers, never pulled in', missing ? 'q' : '')}
         ${tile(open.length, 'open questions', `${m.questions.length - open.length} answered`, open.length ? 'q' : '')}
+        ${tile(late.length, 'owed and late', `${(m.expectations || []).length} declared · ${(m.receipts || []).length} receipts`, late.length ? 'q' : '')}
       </div>
       <div class="split">
         <div class="panel"><div class="panel-head"><h3>Coverage</h3><span class="muted mono">${s ? s.elapsedMs + ' ms' : ''}</span></div><div class="panel-body bars">${s ? Object.entries(s.coverage).map(([k, c]) => bar(k, c)).join('') : '<span class="muted">no station</span>'}</div></div>
@@ -199,7 +227,7 @@ function render() {
     const from = state.diffFrom ?? snaps[snaps.length - 2].id, to = state.diffTo ?? snaps[snaps.length - 1].id;
     const opt = (sel) => snaps.map((x) => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${esc(x.label)} · ${x.at.slice(11, 19)} · ${x.id.slice(0, 8)}</option>`).join('');
     v.innerHTML = `<div class="panel"><div class="panel-head"><h3>Changes</h3><div class="filter"><select data-from>${opt(from)}</select><span class="muted">→</span><select data-to>${opt(to)}</select></div></div><div class="panel-body" data-diff><span class="muted">loading…</span></div></div>${snapTable()}`;
-    const load = async () => { const d = await (await fetch(`/api/diff?from=${encodeURIComponent($('[data-from]', v).value)}&to=${encodeURIComponent($('[data-to]', v).value)}`)).json(); state.diffFrom = d.from; state.diffTo = d.to; $('[data-diff]', v).innerHTML = diffHtml(d); };
+    const load = async () => { const f = $('[data-from]', v).value, t = $('[data-to]', v).value; const [d, rep] = await Promise.all([(await fetch(`/api/diff?from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`)).json(), (await fetch(`/api/report?from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`)).json()]); state.diffFrom = d.from; state.diffTo = d.to; $('[data-diff]', v).innerHTML = `<div class="report"><div class="report-head"><b>In controls language</b> ${summaryHtml(rep)}</div><pre class="report-text">${esc(rep.text)}</pre></div>` + diffHtml(d); };
     $('[data-from]', v).addEventListener('change', load); $('[data-to]', v).addEventListener('change', load); load();
     function snapTable() { return `<div class="panel"><div class="panel-head"><h3>Snapshots · ${snaps.length}</h3><span class="muted mono">content-addressed · identical states share an id</span></div><div class="table-wrap"><table><thead><tr><th>When</th><th>Label</th><th class="mono">Id</th><th class="num">Entities</th><th class="num">Facts</th></tr></thead><tbody>${snaps.slice().reverse().map((x) => `<tr><td class="mono">${x.at.slice(0, 19).replace('T', ' ')}</td><td>${esc(x.label)}</td><td class="mono">${x.id}</td><td class="num">${x.entities}</td><td class="num">${x.assertions}</td></tr>`).join('')}</tbody></table></div></div>`; }
     function diffHtml(d) {

@@ -2,7 +2,7 @@
 // Nothing here comes from a real site. Shapes are recorded from observation of synthetic stations built for testing.
 import { deflateRawSync, gzipSync } from 'node:zlib';
 
-export interface StationOpts { name?: string; devices?: number; pointsPerDevice?: number; withPassword?: boolean; withUnknownModule?: boolean; withLink?: boolean; seed?: number }
+export interface StationOpts { name?: string; devices?: number; pointsPerDevice?: number; withPassword?: boolean; withUnknownModule?: boolean; withLink?: boolean; seed?: number; /** per-device tweaks, to make a 'later backup' that differs */ tweak?: (device: string) => { fallback?: Record<string, string>; inhibitAlarms?: boolean; highLimit?: string; renameTo?: string } }
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
 
@@ -25,7 +25,7 @@ export function stationXml(o: StationOpts = {}): string {
   L.push(`  <p n="BacnetNetwork" h="${H()}" m="bac=bacnet" t="bac:BacnetNetwork">`);
   L.push(`   <p n="localDevice" h="${H()}" t="bac:LocalBacnetDevice"><p n="objectId" t="bac:BacnetObjectIdentifier" v="device:1000"/></p>`);
   for (let d = 1; d <= nd; d++) {
-    const dn = `VAV_${String(d).padStart(2, '0')}`; ctx = dn; seq = 0;
+    const dn0 = `VAV_${String(d).padStart(2, '0')}`; const tw = o.tweak?.(dn0) ?? {}; const dn = tw.renameTo ?? dn0; ctx = dn0; seq = 0;
     L.push(`   <p n="${dn}" h="${H()}" t="bac:BacnetDevice">`);
     L.push(`    <p n="address" t="bac:BacnetAddress"><p n="networkNumber" v="1000"/><p n="macAddress" t="bac:BacnetOctetString" v="${String(d).padStart(2, '0')}"/></p>`);
     L.push(`    <p n="config" h="${H()}" t="bac:BacnetConfigDeviceExt"><p n="deviceObject" h="${H()}" t="bac:BacnetDeviceObject"><p n="objectId" t="bac:BacnetObjectIdentifier" v="device:${2000 + d}"/></p></p>`);
@@ -39,16 +39,17 @@ export function stationXml(o: StationOpts = {}): string {
       ['DA_T', 'c:NumericPoint', 'units=u:°F', 'bac:BacnetNumericProxyExt', 'analogInput:6'],
     ];
     for (let p = 0; p < np; p++) {
-      const [pn, pt, facets, proxy, oid] = defs[p % defs.length]!; ctx = `${dn}/${pn}`; seq = 0;
+      const [pn, pt, facets, proxy, oid] = defs[p % defs.length]!; ctx = `${dn0}/${pn}`; seq = 0;
       L.push(`     <p n="${pn}" h="${H()}" m="c=control" t="${pt}">`);
       L.push(`      <p n="facets" t="b:Facets" v="${esc(facets)}"/>`);
+      if (/Writable$/.test(pt)) L.push(`      <p n="fallback" t="${pt === 'c:NumericWritable' ? 'b:StatusNumeric' : pt === 'c:BooleanWritable' ? 'b:StatusBoolean' : 'b:StatusEnum'}" v="${esc(tw.fallback?.[pn] ?? (pn === 'DPR_O' ? '30.0' : pn === 'SF_C' ? 'false' : '0'))}"/>`);
       L.push(`      <p n="proxyExt" h="${H()}" t="${proxy}"><p n="objectId" t="bac:BacnetObjectIdentifier" v="${oid}"/><p n="propertyId" t="bac:BacnetPropertyIdentifier" v="presentValue"/></p>`);
       if (pn === 'ZN_T' || pn === 'DA_T') L.push(`      <p n="NumericInterval" h="${H()}" m="h=history" t="h:NumericIntervalHistoryExt"><p n="historyName" t="b:Format" v="%parent.parent.parent.name%_%parent.name%"/></p>`);
-      if (pn === 'SF_S') L.push(`      <p n="CommandFailure" h="${H()}" m="a=alarm" t="a:AlarmSourceExt"><p n="offnormalAlgorithm" h="${H()}" t="a:BooleanCommandFailureAlgorithm"/></p>`);
-      if (pn === 'ZN_T') L.push(`      <p n="OutOfRange" h="${H()}" m="a=alarm" t="a:AlarmSourceExt"><p n="offnormalAlgorithm" h="${H()}" t="a:OutOfRangeAlgorithm"><p n="highLimit" v="85.0"/><p n="lowLimit" v="60.0"/></p></p>`);
+      if (pn === 'SF_S') L.push(`      <p n="CommandFailure" h="${H()}" m="a=alarm" t="a:AlarmSourceExt"><p n="alarmInhibit" v="${tw.inhibitAlarms ? 'true' : 'false'}"/><p n="alarmClass" v="defaultAlarmClass"/><p n="offnormalAlgorithm" h="${H()}" t="a:BooleanCommandFailureAlgorithm"/></p>`);
+      if (pn === 'ZN_T') L.push(`      <p n="OutOfRange" h="${H()}" m="a=alarm" t="a:AlarmSourceExt"><p n="alarmInhibit" v="${tw.inhibitAlarms ? 'true' : 'false'}"/><p n="offnormalAlgorithm" h="${H()}" t="a:OutOfRangeAlgorithm"><p n="highLimit" v="${tw.highLimit ?? '85.0'}"/><p n="lowLimit" v="60.0"/></p></p>`);
       L.push(`     </p>`);
     }
-    if (o.withLink && np >= 5) { ctx = `${dn}/Link`; seq = 0; L.push(`     <p n="Link" h="${H()}" t="b:Link"><p n="sourceOrd" v="h:${H(`${dn}/SF_S#0`)}"/><p n="sourceSlotName" v="out"/><p n="targetSlotName" v="in10"/></p>`); }
+    if (o.withLink && np >= 5) { ctx = `${dn0}/Link`; seq = 0; L.push(`     <p n="Link" h="${H()}" t="b:Link"><p n="sourceOrd" v="h:${H(`${dn0}/SF_S#0`)}"/><p n="sourceSlotName" v="out"/><p n="targetSlotName" v="in10"/></p>`); }
     L.push(`    </p>`);
     L.push(`   </p>`);
   }
