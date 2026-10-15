@@ -3,6 +3,7 @@
 import net from 'node:net';
 import dns from 'node:dns';
 import tls from 'node:tls';
+import dgram from 'node:dgram';
 const LOOP = /^(127\.\d+\.\d+\.\d+|::1|localhost)$/;
 const deny = (what: string, host?: string) => { throw new Error(`egress tripwire: ${what}${host ? ' to ' + host : ''} attempted during tests`); };
 const hostOf = (args: any[]): string | undefined => {
@@ -18,3 +19,5 @@ const origConnect = net.Socket.prototype.connect;
 (dns.promises as any).lookup = async (host: string) => { if (LOOP.test(host)) return { address: '127.0.0.1', family: 4 }; deny('dns.promises.lookup', host); };
 const origFetch = globalThis.fetch;
 (globalThis as any).fetch = async (input: any, init?: any) => { const u = new URL(typeof input === 'string' ? input : input.url); if (!LOOP.test(u.hostname)) deny('fetch', u.hostname); return origFetch(input, init); };
+const origSend = dgram.Socket.prototype.send;
+(dgram.Socket.prototype as any).send = function (...args: any[]) { const addr = args.find((a, i) => i > 0 && typeof a === 'string'); if (addr && !LOOP.test(addr)) deny('dgram send', addr); return (origSend as any).apply(this, args); };

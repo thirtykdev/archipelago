@@ -8,11 +8,18 @@ import { refKey, can, capabilitiesAt, Forbidden, requireCapability, ANONYMOUS, t
 import { Users } from './users.ts';
 import { CapExceeded, Refused } from '@archipelago/importer-station-file';
 import { simulatedConnector } from '@archipelago/connector-simulated';
+import { bacnetConnector, type BacnetConfig } from '@archipelago/connector-bacnet-ip';
+import { loadConfig, saveConfig, type AtollConfig } from './config.ts';
+import { readFileSync as rfs } from 'node:fs';
 import { EdgeModel } from './model.ts';
 import { Store } from './store.ts';
 
-export interface EdgeOptions { port?: number; host?: string; simulate?: boolean; maxUploadBytes?: number; tickMs?: number; /** folder for the model log and encrypted artifacts; omitted = in memory only */ dataDir?: string; /** preview: an unidentified caller is the seeded site administrator (default true); false = anonymous, which can do nothing */ openPreview?: boolean }
-const STATIC = join(dirname(fileURLToPath(import.meta.url)), '..', 'static');
+export interface EdgeOptions { port?: number; host?: string; simulate?: boolean; maxUploadBytes?: number; tickMs?: number; /** folder for the model log and encrypted artifacts; omitted = in memory only */ dataDir?: string; /** preview: an unidentified caller is the seeded site administrator (default true); false = anonymous, which can do nothing */ openPreview?: boolean; /** BACnet/IP read-only connector configuration; undefined = off */ bacnet?: BacnetConfig; /** site configuration (installed mode); the setup screen edits it and it is saved next to the data */ config?: AtollConfig }
+const STATIC = (() => { try { return join(dirname(fileURLToPath(import.meta.url)), '..', 'static'); } catch { return 'static'; } })();
+// When packaged as a single executable, the UI files travel inside the binary as assets.
+let seaAsset: ((name: string) => Uint8Array | undefined) | undefined;
+try { const sea = (process as any).getBuiltinModule?.('node:sea'); if (sea?.isSea?.()) seaAsset = (n: string) => { try { return new Uint8Array(sea.getAsset(n)); } catch { return undefined; } }; } catch {}
+const readStatic = (p: string): Uint8Array | undefined => { const name = p.replace(/^\//, ''); if (seaAsset) return seaAsset(name); const f = join(STATIC, name); return existsSync(f) ? new Uint8Array(rfs(f)) : undefined; };
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json' };
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'";
 
@@ -24,6 +31,20 @@ export function createEdge(opts: EdgeOptions = {}) {
   if (store) { replayed = store.attach(model.model); users.seedPreview(); for (const a of store.listArtifacts()) { const bytes = store.getArtifact(a.sha256); if (bytes) { try { model.import(a.name, bytes); } catch { /* an artifact that no longer parses is kept but not loaded */ } } } }
   const clients = new Set<http.ServerResponse>();
   let session: Session | undefined; let unsubscribe: (() => void) | undefined;
+  let bac: Session | undefined; let bacUnsub: (() => void) | undefined; let bacError: string | undefined; let bacDiscovered = 0;
+  const bacnetCfg = () => (opts.config?.bacnet.enabled ? { port: opts.config.bacnet.port, bind: opts.config.bacnet.bind, broadcast: opts.config.bacnet.broadcast, pollMs: opts.config.bacnet.pollMs, targets: opts.config.bacnet.targets } : opts.bacnet);
+  async function startBacnet() {
+    bacUnsub?.(); bacUnsub = undefined; await bac?.close(); bac = undefined; bacError = undefined; bacDiscovered = 0;
+    const cfg = bacnetCfg(); if (!cfg) return;
+    try {
+      bac = await bacnetConnector.open(cfg);
+      for await (const n of bac.discover()) { model.observe(n); bacDiscovered++; }
+      model.recorrelate();
+      const refs = model.refs().map((r) => r.ref);
+      if (refs.length) bacUnsub = bac.subscribe(refs, (reading: Reading) => { model.readings.set(refKey(reading.ref), reading); broadcast('reading', reading); });
+      broadcast('model', { changed: 'discovery' });
+    } catch (e) { bacError = (e as Error).message; }
+  }
   const maxUpload = opts.maxUploadBytes ?? 256 * 1024 * 1024;
   if (!store) users.seedPreview();
   // Identity, preview edition: the caller names a known principal in a header. Sessions replace this in the first
@@ -66,7 +87,19 @@ export function createEdge(opts: EdgeOptions = {}) {
         const d = model.attachDocument(sha, b.entity ?? null, b.kind ?? 'drawing', who.name); if (!d) return json(res, 404, { error: 'unknown document or entity' });
         broadcast('model', { changed: 'documents' }); return json(res, 200, { ok: true, document: d });
       }
-      if (req.method === 'GET' && url.pathname === '/api/model') { guard(req, 'model.read'); return json(res, 200, { ...model.snapshot(), atoll: { name: 'Atoll preview', mode: 'local', storage: store ? `on disk · ${store.dir} · artifacts encrypted` : 'in-memory (preview)', replayedEvents: replayed, connectors: opts.simulate ? [simulatedConnector.describe()] : [] } }); }
+      if (req.method === 'GET' && url.pathname === '/api/model') { guard(req, 'model.read'); return json(res, 200, { ...model.snapshot(), atoll: { name: 'Atoll preview', mode: 'local', storage: store ? `on disk · ${store.dir} · artifacts encrypted` : 'in-memory (preview)', replayedEvents: replayed, connectors: [...(opts.simulate ? [{ ...simulatedConnector.describe(), health: session?.health() ?? null }] : []), ...(bacnetCfg() ? [{ ...bacnetConnector.describe(), health: bac?.health() ?? null, error: bacError ?? null, discovered: bacDiscovered, config: { ...bacnetCfg() } }] : [])] }, config: opts.config ? { siteName: opts.config.siteName, setupDone: opts.config.setupDone, adminName: opts.config.adminName, simulate: opts.config.simulate, bacnet: opts.config.bacnet, dataDir: store?.dir ?? null } : null }); }
+      if (req.method === 'POST' && url.pathname === '/api/setup') {
+        guard(req, 'admin.site');
+        let body = ''; for await (const ch of req) { body += ch; if (body.length > 64 * 1024) return json(res, 413, { error: 'too large' }); }
+        let b: Partial<AtollConfig> = {}; try { b = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
+        if (!opts.config || !store) return json(res, 400, { error: 'setup is only available when Atoll runs with a data folder' });
+        const next: AtollConfig = { ...opts.config, ...b, bacnet: { ...opts.config.bacnet, ...(b.bacnet ?? {}) }, setupDone: true };
+        if (!next.siteName?.trim()) return json(res, 400, { error: 'a site name is required' });
+        opts.config = next; saveConfig(store.dir, next); opts.simulate = next.simulate;
+        if (next.adminName?.trim()) users.set('admin', next.adminName.trim(), [{ role: 'administrator', scope: '/' }], users.get('admin') ?? { id: 'admin', name: 'Site administrator', grants: [{ role: 'administrator', scope: '/' }] });
+        await resubscribe(); void startBacnet(); broadcast('model', { changed: 'setup' });
+        return json(res, 200, { ok: true, config: next });
+      }
       if (req.method === 'GET' && url.pathname === '/api/diff') { guard(req, 'model.read'); const from = url.searchParams.get('from'), to = url.searchParams.get('to'); if (!from || !to) return json(res, 400, { error: 'from and to are required' }); try { return json(res, 200, model.model.diff(from, to)); } catch (e) { return json(res, 404, { error: (e as Error).message }); } }
       if (req.method === 'GET' && url.pathname.startsWith('/api/facts/')) { guard(req, 'model.read'); const id = decodeURIComponent(url.pathname.slice('/api/facts/'.length)); const e = model.model.entities.get(id); if (!e) return json(res, 404, { error: 'unknown entity' }); return json(res, 200, { entity: e, facts: model.model.facts(id).map((a) => ({ ...a, history: model.model.history(id, a.key).length })) }); }
       if (req.method === 'POST' && url.pathname.startsWith('/api/questions/')) {
@@ -100,17 +133,17 @@ export function createEdge(opts: EdgeOptions = {}) {
       if (req.method === 'GET') {
         let p = url.pathname === '/' ? '/index.html' : url.pathname;
         if (p.includes('..')) return json(res, 400, { error: 'bad path' });
-        const f = join(STATIC, p);
-        if (!existsSync(f)) return json(res, 404, { error: 'not found' });
-        res.writeHead(200, { 'content-type': MIME[extname(f)] ?? 'application/octet-stream', 'content-security-policy': CSP, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' });
-        return res.end(readFileSync(f));
+        const body = readStatic(p);
+        if (!body) return json(res, 404, { error: 'not found' });
+        res.writeHead(200, { 'content-type': MIME[extname(p)] ?? 'application/octet-stream', 'content-security-policy': CSP, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' });
+        return res.end(Buffer.from(body));
       }
       return json(res, 405, { error: 'method not allowed' });
     } catch (e) { if (e instanceof Forbidden) return json(res, 403, { error: e.message, capability: e.capability, target: e.target }); return json(res, 500, { error: (e as Error).message }); }
   });
 
-  const listen = () => new Promise<{ port: number; host: string }>((resolve) => { server.listen(opts.port ?? 2865, opts.host ?? '127.0.0.1', () => { const a = server.address() as { port: number; address: string }; resolve({ port: a.port, host: a.address }); }); });
-  const close = async () => { unsubscribe?.(); await session?.close(); for (const c of clients) c.end(); await new Promise<void>((r) => server.close(() => r())); };
+  const listen = () => new Promise<{ port: number; host: string }>((resolve) => { server.listen(opts.port ?? 2865, opts.host ?? '127.0.0.1', () => { const a = server.address() as { port: number; address: string }; void startBacnet(); resolve({ port: a.port, host: a.address }); }); });
+  const close = async () => { unsubscribe?.(); bacUnsub?.(); await bac?.close(); await session?.close(); for (const c of clients) c.end(); await new Promise<void>((r) => server.close(() => r())); };
   const preload = async (name: string, bytes: Uint8Array) => { const a = model.import(name, bytes); if (a.kind === 'document' && !store) model.documentBytes.set(a.sha256, bytes); if (store) { store.putArtifact(a.sha256, a.name, bytes); for (const old of store.listArtifacts()) if (!model.artifacts.some((x) => x.sha256 === old.sha256)) store.removeArtifact(old.sha256); } await resubscribe(); return a; };
   return { server, model, listen, close, preload };
 }

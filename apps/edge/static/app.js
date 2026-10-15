@@ -55,21 +55,47 @@ function prov(kind, title) { return `<span class="prov prov-${kind}" title="${es
 function valueCell(ref, kind) {
   if (!ref) return `<td class="val muted">·</td>`;
   const r = state.model?.readings?.[refKey(ref)];
-  if (!r) return `<td class="val muted" data-val="${esc(refKey(ref))}">${state.simulate ? '…' : 'no connector'}</td>`;
-  return `<td class="val" data-val="${esc(refKey(ref))}">${fmt(r.value, kind)} ${prov(r.source === 'simulated' ? 'simulated' : 'observed', r.at)}</td>`;
+  if (!r) return `<td class="val muted" data-val="${esc(refKey(ref))}">${state.simulate || (state.model?.atoll?.connectors || []).length ? '…' : 'no connector'}</td>`;
+  return `<td class="val" data-val="${esc(refKey(ref))}">${r.status === 'ok' ? fmt(r.value, kind) : `<span class="prov prov-question">${esc(r.status)}</span>`} ${prov(r.source === 'simulated' ? 'simulated' : 'observed', `${r.source} · ${r.at}`)}</td>`;
 }
 function fmt(v, kind) { if (v === null || v === undefined) return '—'; if (typeof v === 'boolean') return v ? 'on' : 'off'; if (typeof v === 'number') return kind === 'enum' ? String(v) : v.toFixed(1); return esc(v); }
-function patchValue(k, r) { for (const td of $$(`[data-val="${CSS.escape(k)}"]`)) { td.classList.remove('muted'); td.innerHTML = `${fmt(r.value)} ${prov(r.source === 'simulated' ? 'simulated' : 'observed', r.at)}`; td.classList.remove('changed'); void td.offsetWidth; td.classList.add('changed'); } }
+function patchValue(k, r) { for (const td of $$(`[data-val="${CSS.escape(k)}"]`)) { td.classList.remove('muted'); td.innerHTML = `${r.status === 'ok' ? fmt(r.value) : `<span class="prov prov-question">${esc(r.status)}</span>`} ${prov(r.source === 'simulated' ? 'simulated' : 'observed', `${r.source} · ${r.at}`)}`; td.classList.remove('changed'); void td.offsetWidth; td.classList.add('changed'); } }
 function bindingText(b) { return b ? `${b.objectType ?? '?'}:${b.instance ?? '?'} @ ${b.device ?? '?'}` : ''; }
 
 function render() {
   const m = state.model; if (!m) return;
+  if (m.config && !m.config.setupDone && may('admin.site')) { $$('[data-view]').forEach((v) => { v.hidden = v.dataset.view !== 'setup'; }); setup(); return; }
+  if (state.view === 'setup') { state.view = 'overview'; $$('[data-view]').forEach((v) => { v.hidden = v.dataset.view !== 'overview'; }); }
   const s = m.station;
   $('[data-site]').innerHTML = s ? `${esc(s.stationName || 'station')} <span class="muted">· ${s.artifact.format} · ${s.components} components</span>` : 'No station imported';
   const open = m.questions.filter((q) => !q.answered); const qc = $('[data-qcount]'); qc.textContent = open.length; qc.toggleAttribute('data-zero', !open.length);
   $('[data-status]').textContent = `${m.artifacts.length} artifact${m.artifacts.length === 1 ? '' : 's'} · ${m.model.entities} entities · ${m.model.assertions} facts (${m.model.superseded} superseded) · ${m.snapshots.length} snapshots · ${Object.keys(m.readings).length} live values · ${m.atoll.storage}`;
   renderConn();
-  ({ overview, devices, points, controllers, questions, changes, documents, artifacts })[state.view]?.();
+  ({ overview, devices, points, controllers, questions, changes, documents, artifacts, setup })[state.view]?.();
+
+  function setup() {
+    const v = $('[data-view="setup"]'); const c = m.config;
+    v.innerHTML = `<div class="setup"><div class="panel"><div class="panel-head"><div><h2>Welcome to Atoll</h2><span class="muted">Three answers and you are running. Everything stays on this machine, in <span class="mono">${esc(c.dataDir ?? '')}</span>. You can change all of this later.</span></div></div>
+      <form class="panel-body setup-form" data-setup>
+        <label><span>What is this site called?</span><input name="siteName" required placeholder="e.g. North campus, Home lab" value="${esc(c.siteName)}" /></label>
+        <label><span>Your name (you are the administrator)</span><input name="adminName" required placeholder="e.g. Kyle" value="${esc(c.adminName)}" /><small class="muted">Accounts and sign-in come with the first release. For now, Atoll listens only on this machine, and your name goes on every change you make.</small></label>
+        <fieldset><legend>Read the network</legend>
+          <label class="row"><input type="checkbox" name="bacnetEnabled" ${c.bacnet.enabled ? 'checked' : ''} /><span>BACnet/IP, read-only. Atoll will ask who is out there and read what they expose. It cannot write.</span></label>
+          <div class="grid2"><label><span>Broadcast address</span><input name="broadcast" value="${esc(c.bacnet.broadcast)}" placeholder="255.255.255.255 or 192.168.1.255" /></label><label><span>UDP port</span><input name="bacnetPort" value="${c.bacnet.port}" /></label></div>
+          <label><span>Also ask these addresses directly (optional, one per line; a JACE, a router, a device on another subnet)</span><textarea name="targets" rows="2" placeholder="192.168.1.50">${esc((c.bacnet.targets || []).join('\n'))}</textarea></label>
+          <label><span>Poll every (ms)</span><input name="pollMs" value="${c.bacnet.pollMs}" /></label>
+        </fieldset>
+        <label class="row"><input type="checkbox" name="simulate" ${c.simulate ? 'checked' : ''} /><span>No hardware here: invent values for every address so I can see the screens work (labeled simulated).</span></label>
+        <div class="setup-actions"><button class="btn btn-primary" type="submit">Start Atoll</button><span class="muted">You can import station backups and controller files right after.</span></div>
+      </form></div>
+      <div class="note">What Atoll will not do: write to any point, contact anything outside this machine, or guess a fact it could not read. Every fact is labeled with where it came from.</div></div>`;
+    $('[data-setup]', v).addEventListener('submit', async (e) => {
+      e.preventDefault(); const f = new FormData(e.target);
+      const body = { siteName: f.get('siteName'), adminName: f.get('adminName'), simulate: f.get('simulate') === 'on', bacnet: { enabled: f.get('bacnetEnabled') === 'on', broadcast: f.get('broadcast'), port: Number(f.get('bacnetPort')) || 47808, pollMs: Number(f.get('pollMs')) || 5000, targets: String(f.get('targets') || '').split(/\n/).map((x) => x.trim()).filter(Boolean) } };
+      const r = await fetch('/api/setup', { method: 'POST', body: JSON.stringify(body) }); const j = await r.json();
+      if (!r.ok) toast(j.error, true); else { toast(`Welcome, ${j.config.adminName}. ${j.config.siteName} is running.`); state.view = 'overview'; location.hash = 'overview'; await load(); }
+    });
+  }
 
   function overview() {
     const v = $('[data-view="overview"]');
@@ -88,6 +114,7 @@ function render() {
       </div>
       <div class="split">
         <div class="panel"><div class="panel-head"><h3>Coverage</h3><span class="muted mono">${s ? s.elapsedMs + ' ms' : ''}</span></div><div class="panel-body bars">${s ? Object.entries(s.coverage).map(([k, c]) => bar(k, c)).join('') : '<span class="muted">no station</span>'}</div></div>
+        <div class="panel"><div class="panel-head"><h3>Connectors</h3></div><div class="panel-body">${(m.atoll.connectors || []).map((c) => `<div class="conn"><b>${esc(c.label)}</b> <span class="mono muted">${c.capabilities.write ? '' : 'read-only'}${c.discovered !== undefined ? ` · ${c.discovered} objects discovered` : ''}${c.health ? ` · ${c.health.connected ? 'connected' : 'closed'}${c.health.lastSeen ? ' · last seen ' + c.health.lastSeen.slice(11, 19) : ''}` : ''}</span>${c.error ? `<div class="prov prov-question">${esc(c.error)}</div>` : ''}${c.config ? `<div class="mono muted small">broadcast ${esc(c.config.broadcast)} · port ${c.config.port} · poll ${c.config.pollMs} ms${c.config.targets?.length ? ' · also ' + esc(c.config.targets.join(', ')) : ''}</div>` : ''}</div>`).join('') || '<span class="muted">No connector. Start with --simulate, --bacnet, or run setup.</span>'}</div></div>
         <div class="panel"><div class="panel-head"><h3>What the connector would read</h3>${state.simulate ? prov('simulated', 'values are invented by the simulated connector') : '<span class="muted mono">no connector</span>'}</div><div class="panel-body">
           <p class="lede">Every native address in the model: ${bound} from the station's proxy points, ${missing} from controller files that the station never pulled in. A local Atoll reads all of them, read-only, if the network routes to the controllers. No add-points step.</p>
           <p class="note">${state.simulate ? 'Simulation is on: values below are invented, labeled <b>simulated</b>, and exist so the model and this screen can be exercised with no building.' : 'Start with <code>--simulate</code> to see live values invented for every address.'}</p>
@@ -101,7 +128,7 @@ function render() {
 
   function devices() {
     const v = $('[data-view="devices"]');
-    if (!s) { v.innerHTML = `<div class="panel"><div class="empty"><b>No station imported</b>Devices come from the station backup.</div></div>`; return; }
+    if (!s) { v.innerHTML = `<div class="panel"><div class="empty"><b>No station imported</b>Devices come from a station backup; devices seen on the network appear below.</div></div>${discoveredPanel()}`; return; }
     const sel = state.selectedDevice ?? s.devices[0]?.path; state.selectedDevice = sel;
     const d = s.devices.find((x) => x.path === sel);
     const ctl = m.controllers.find((c) => c.matchedDevice === sel);
@@ -110,8 +137,16 @@ function render() {
         ${s.devices.map((x) => `<tr class="clickable ${x.path === sel ? 'is-selected' : ''}" data-dev="${esc(x.path)}"><td><b>${esc(x.name)}</b></td><td class="kind">${esc(x.type)}</td><td class="mono">${x.instance ?? '<span class="muted">none</span>'}</td><td class="num">${x.points}</td><td>${m.controllers.filter((c) => c.matchedDevice === x.path).map((c) => `<span class="tag">${esc(c.artifact.name)}</span>`).join('') || '<span class="muted">—</span>'}</td></tr>`).join('')}
       </tbody></table></div></div>
       ${d ? devicePanel(d, ctl) : ''}
-    </div>`;
+    </div>${discoveredPanel()}`;
     $$('[data-dev]', v).forEach((tr) => tr.addEventListener('click', () => { state.selectedDevice = tr.dataset.dev; devices(); }));
+  }
+  function discoveredPanel() {
+    const disc = m.discovered || []; if (!disc.length) return '';
+    return `<div class="panel"><div class="panel-head"><div><h3>Seen on the network · ${disc.length} device${disc.length === 1 ? '' : 's'}</h3><span class="muted">Everything the BACnet/IP connector found, read-only. Objects the station already pulls in are marked; the rest are read anyway (no add-points step).</span></div>${prov('observed', 'read live')}</div>
+      ${disc.map((dv) => `<div class="panel-body"><h3>${esc(dv.name)} <span class="muted mono">· device ${dv.instance} · ${esc(dv.address)} · ${dv.objects.length} objects</span></h3>
+      <div class="table-wrap"><table><thead><tr><th>Object</th><th>Kind</th><th>Units</th><th class="mono">Address</th><th>Value</th><th>In station</th></tr></thead><tbody>
+      ${dv.objects.map((o) => `<tr><td><b>${esc(o.name)}</b></td><td class="kind">${o.kind}${o.writable ? ' <span class="tag tag-w">writable</span>' : ''}</td><td class="mono">${esc(o.units ?? '')}</td><td class="mono">${esc(bindingText(o.ref))}</td>${valueCell(o.ref, o.kind)}<td>${o.inStation ? prov('imported', 'also in the station backup') : '<span class="muted">no</span>'}</td></tr>`).join('')}
+      </tbody></table></div></div>`).join('')}</div>`;
   }
   function devicePanel(d, ctl) {
     const pts = s.points.filter((p) => p.device === d.path);

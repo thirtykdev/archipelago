@@ -1,5 +1,5 @@
 // The in-memory model behind the preview runtime. Everything here is derived from imported files and labeled.
-import { correlate, refKey, sha256, Model, type NativeRef, type Reading, type Provenance } from '@archipelago/core';
+import { correlate, refKey, sha256, Model, type NativeRef, type Reading, type Provenance, type DiscoveredNode } from '@archipelago/core';
 import { inspect, applyStation, type InspectReport } from '@archipelago/importer-station-file';
 import { parseControllerFile, type ControllerFile } from '@archipelago/importer-controller-file';
 import { listZip, sniff, Refused } from '@archipelago/importer-station-file';
@@ -109,11 +109,36 @@ export class EdgeModel {
     }
   }
 
+  /** devices and objects seen live on the network, kept as observed entities (ADR 0006: read everything) */
+  discovered: Array<{ instance: number; name: string; address: string; objects: Array<{ name: string; kind: string; units?: string; writable?: boolean; ref: NativeRef; inStation: boolean }> }> = [];
+  observe(n: DiscoveredNode) {
+    const prov: Provenance = { kind: 'observed', source: 'bacnet-ip', ref: refKey(n.ref), at: new Date().toISOString() };
+    const inst = Number(n.ref.device);
+    if (n.kind === 'device') {
+      const id = `observed|device:${inst}`; this.model.addEntity({ id, kind: 'device', name: n.name, path: `/observed/${inst}` });
+      this.model.assert(id, 'instance', inst, prov); this.model.assert(id, 'address', String(n.ref.address ?? ''), prov);
+      if (!this.discovered.some((d) => d.instance === inst)) this.discovered.push({ instance: inst, name: n.name, address: String(n.ref.address ?? ''), objects: [] }); else { const d = this.discovered.find((x) => x.instance === inst)!; d.name = n.name; d.address = String(n.ref.address ?? ''); }
+      return;
+    }
+    const d = this.discovered.find((x) => x.instance === inst); if (!d) return;
+    const id = `observed|device:${inst}|${n.ref.objectType}:${n.ref.instance}`;
+    this.model.addEntity({ id, kind: 'point', name: n.name, path: `/observed/${inst}/${n.name}`, parent: `observed|device:${inst}` });
+    this.model.assert(id, 'kind', n.kind, prov); this.model.assert(id, 'binding', { connector: 'bacnet-ip', ...n.ref }, prov); if (n.units) this.model.assert(id, 'units', n.units, prov); if (n.writable !== undefined) this.model.assert(id, 'writable', n.writable, prov);
+    const inStation = !!this.station?.station.points.find((p) => p.binding && p.binding.device === inst && p.binding.objectType === n.ref.objectType && p.binding.instance === n.ref.instance);
+    const existing = d.objects.findIndex((o) => refKey(o.ref) === refKey(n.ref));
+    const rec = { name: n.name, kind: n.kind, ...(n.units ? { units: n.units } : {}), ...(n.writable !== undefined ? { writable: n.writable } : {}), ref: n.ref, inStation };
+    if (existing >= 0) d.objects[existing] = rec; else d.objects.push(rec);
+  }
+
   /** every native address the model knows about: station bindings plus controller-only points */
   refs(): Array<{ ref: NativeRef; name: string; kind: string; units?: string; via: 'station' | 'controller'; subject: string }> {
     const out: Array<{ ref: NativeRef; name: string; kind: string; units?: string; via: 'station' | 'controller'; subject: string }> = [];
     for (const p of this.station?.station.points ?? []) if (p.binding) { const { connector: _c, ...ref } = p.binding; out.push({ ref, name: p.name, kind: p.kind, ...(p.units ? { units: p.units } : {}), via: 'station', subject: p.path }); }
     for (const c of this.controllers) for (const p of c.correlation.onlyController) out.push({ ref: p.ref, name: p.name, kind: p.kind, via: 'controller', subject: `${c.artifact.name}#${p.name}` });
+    // station and controller refs carry no address; a discovered device of the same instance supplies it
+    for (const r of out) if (r.ref.address === undefined) { const d = this.discovered.find((x) => x.instance === Number(r.ref.device)); if (d) r.ref = { ...r.ref, address: d.address }; }
+    const seen = new Set(out.map((r) => refKey({ device: r.ref.device!, objectType: r.ref.objectType!, instance: r.ref.instance! })));
+    for (const d of this.discovered) for (const o of d.objects) { const k = refKey({ device: o.ref.device!, objectType: o.ref.objectType!, instance: o.ref.instance! }); if (!seen.has(k)) { seen.add(k); out.push({ ref: o.ref, name: o.name, kind: o.kind, ...(o.units ? { units: o.units } : {}), via: 'station', subject: `observed|device:${d.instance}|${o.ref.objectType}:${o.ref.instance}` }); } }
     return out;
   }
 
@@ -147,6 +172,7 @@ export class EdgeModel {
       atoll: { name: 'Atoll preview', mode: 'local', storage: 'in-memory (preview)', connectors: [] as string[] },
       artifacts: this.artifacts,
       documents: this.documents,
+      discovered: this.discovered,
       station: s ? { ...s.station, artifact: s.artifact, coverage: s.coverage, redactions: s.redactions, handles: s.handles, elapsedMs: s.elapsedMs } : null,
       controllers: this.controllers.map((c) => ({ artifact: c.artifact, deviceName: c.file.deviceName, deviceInstance: c.file.deviceInstance ?? null, format: c.file.format, confidence: c.file.confidence, points: c.file.points, warnings: c.file.warnings, unknownObjectTypes: c.file.unknownObjectTypes, matchedDevice: c.matchedDevice ?? null, correlation: c.correlation })),
       questions: this.questions(true),

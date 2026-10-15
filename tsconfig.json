@@ -28,6 +28,12 @@
       ],
       "@archipelago/edge": [
         "apps/edge/src/index.ts"
+      ],
+      "@archipelago/connector-bacnet-ip": [
+        "connectors/bacnet-ip/src/index.ts"
+      ],
+      "@archipelago/connector-bacnet-ip/testdevice": [
+        "connectors/bacnet-ip/src/testdevice.ts"
       ]
     }
   },

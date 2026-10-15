@@ -120,3 +120,17 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
 .caps { font-size: 10px; color: var(--ink-3); line-height: 1.5; word-break: break-word; }
 [data-needs][data-denied] { display: none !important; }
 .doc-row select { padding: 4px 6px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--ink); font-size: 12px; }
+
+.setup { max-width: 760px; display: grid; gap: 14px; }
+.setup h2 { font-size: 20px; }
+.setup-form { display: grid; gap: 16px; }
+.setup-form label { display: grid; gap: 5px; font-size: 13px; }
+.setup-form label > span { font-weight: 500; }
+.setup-form input[type=text], .setup-form input:not([type]), .setup-form textarea { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--ink); font: inherit; }
+.setup-form fieldset { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: grid; gap: 12px; }
+.setup-form legend { font: 600 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); padding: 0 6px; }
+.setup-form .row { grid-template-columns: auto 1fr; align-items: start; }
+.setup-form .grid2 { display: grid; grid-template-columns: 1fr 160px; gap: 12px; }
+.setup-actions { display: flex; align-items: center; gap: 12px; }
+.conn { padding: 8px 0; border-bottom: 1px solid var(--line-2); display: grid; gap: 4px; }
+.conn:last-child { border-bottom: 0; }

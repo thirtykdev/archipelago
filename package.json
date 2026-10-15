@@ -22,10 +22,13 @@
     "check:fixtures": "node scripts/check-fixtures.mjs",
     "check": "npm run typecheck && npm run check:boundaries && npm run check:fixtures && npm test",
     "archipelago": "tsx apps/cli/src/main.ts",
-    "fixtures": "tsx fixtures/synthetic/write.ts"
+    "fixtures": "tsx fixtures/synthetic/write.ts",
+    "package": "node scripts/package.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

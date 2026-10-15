@@ -19,7 +19,8 @@ packages/core              assertion and provenance types; the connector interfa
 importers/station-file     hardened reader for station backup files (.bog, .dist) with a vendor mapping
 importers/controller-file  controller application files (.caf) and graphical controller files (.gfx)
 connectors/simulated       the first connector: invents labeled values for every native address, no building needed
-apps/edge                  Atoll, the local preview runtime: import, correlate, live values, web UI, in memory
+connectors/bacnet-ip       BACnet/IP read-only: Who-Is, ReadProperty, object discovery, polling; no write encoder exists
+apps/edge                  Atoll, the local runtime: import, correlate, persist, permissions, live values, web UI, first-run setup
 apps/cli                   `archipelago inspect <file>` and `archipelago serve [--simulate] [files...]`
 fixtures/synthetic         generated stations and controller files, and a hostile-file corpus
 ```
@@ -44,7 +45,23 @@ npm run archipelago -- serve --simulate fixtures/synthetic/out/site.dist fixture
 # open http://127.0.0.1:2865
 npm run check          # typecheck, boundary check, fixture check, tests
 npm run test:offline   # the suite in a container with no network
+npm run archipelago -- serve --installed --lab-device --open   # the installed experience: setup screen, two lab BACnet devices
+npm run package        # single-file executables in dist/ for macOS, Linux and Windows (downloads Node per platform)
 ```
+
+## Try it in a lab
+
+Download the file for your platform from the latest lab pre-release, run
+it, and it opens the setup screen in your browser. Turn on BACnet/IP with
+your lab's broadcast address and Atoll discovers every device and object it
+can see, read-only, and polls them. Import the station backup and the
+controller files for the same devices and it correlates all three. Add
+`--lab-device` to the command line to run two synthetic BACnet devices on
+your own machine when there is no hardware around.
+
+Data lives in your user application folder (shown on the setup screen):
+an append-only model log and artifacts encrypted at rest. Delete the folder
+to remove everything. Nothing leaves the machine.
 
 ## Principles
 
