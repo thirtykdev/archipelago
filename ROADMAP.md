@@ -13,8 +13,10 @@ https://www.archipelago-project.org/roadmap/. In order:
    runtime. **This is where the repository is now.**
 3. Semantic engine, local runtime, BACnet/IP read-only connector, first
    release: equipment instances with provenance, questions, model-driven
-   views, snapshot comparison and drift detection, web app, API, MCP tools,
-   signed and checksummed release.
+   views, snapshot comparison and drift detection, web app with end-user
+   theming (presets, color picker, light and dark, per-user saved themes,
+   an administrator-set starting theme; see docs/design/theming.md), API,
+   MCP tools, signed and checksummed release.
 4. More sources: Modbus TCP and RTU; Metasys `.caf`, Distech `.gfx`, Metasys
    SCT export, equipment schedules; an optional Niagara station connector
    after legal review.
