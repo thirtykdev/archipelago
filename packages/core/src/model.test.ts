@@ -9,6 +9,10 @@ describe('model', () => {
     const b = m.assert('e1', 'units', '°C', imp('/d/ZN_T/facets'));
     expect(m.value('e1', 'units')).toBe('°C');
     expect(m.history('e1', 'units').map((x) => x.id)).toEqual([b.id, a.id]);
+    // a value that flips back gets the same content id; history must not loop on it
+    const c = m.assert('e1', 'units', '°F', imp('/d/ZN_T/facets'));
+    expect(c.id).toBe(a.id);
+    expect(m.history('e1', 'units').map((x) => x.id)).toEqual([a.id, b.id, a.id]);
     m.assert('e1', 'units', 'degF', { kind: 'confirmed', by: 'tech', at: 'now', supersedes: b.id });
     m.assert('e1', 'units', '°C', imp('/d/ZN_T/facets'));           // a re-import cannot displace a confirmation
     expect(m.value('e1', 'units')).toBe('degF');

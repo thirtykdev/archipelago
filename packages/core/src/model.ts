@@ -20,6 +20,8 @@ export class Model {
   readonly assertions = new Map<string, Assertion>();
   /** assertion id -> the id that superseded it */
   readonly supersededBy = new Map<string, string>();
+  /** Every assertion applied for a subject+key, in log order. A value that comes back (same content id) is a new link, not a loop. */
+  private readonly chain = new Map<string, string[]>();
   /** subject -> key -> current assertion id */
   private current = new Map<string, Map<string, string>>();
   readonly snapshots: Snapshot[] = [];
@@ -45,6 +47,7 @@ export class Model {
   private place(a: Assertion, supersedes?: string) {
     this.assertions.set(a.id, a);
     if (supersedes) this.supersededBy.set(supersedes, a.id);
+    const ck = `${a.subject}\u0000${a.key}`; const c = this.chain.get(ck); if (c) c.push(a.id); else this.chain.set(ck, [a.id]);
     let m = this.current.get(a.subject); if (!m) { m = new Map(); this.current.set(a.subject, m); }
     m.set(a.key, a.id);
   }
@@ -65,7 +68,7 @@ export class Model {
   value<T = unknown>(subject: string, key: string): T | undefined { return this.currentAssertion(subject, key)?.value as T | undefined; }
   facts(subject: string): Assertion[] { const m = this.current.get(subject); return m ? [...m.values()].map((id) => this.assertions.get(id)!) : []; }
   /** The chain behind a fact: the current assertion, then what it superseded, oldest last. */
-  history(subject: string, key: string): Assertion[] { const out: Assertion[] = []; let a = this.currentAssertion(subject, key); const back = new Map<string, string>(); for (const [old, nu] of this.supersededBy) back.set(nu, old); while (a) { out.push(a); const prev = back.get(a.id); a = prev ? this.assertions.get(prev) : undefined; } return out; }
+  history(subject: string, key: string): Assertion[] { const c = this.chain.get(`${subject}\u0000${key}`) ?? []; return [...c].reverse().map((id) => this.assertions.get(id)!); }
   live(kind?: EntityKind): Entity[] { return [...this.entities.values()].filter((e) => !this.retired.has(e.id) && (!kind || e.kind === kind)); }
 
   snapshot(label: string, artifacts: string[] = []): Snapshot {

@@ -21,7 +21,7 @@ export function scanFolder(src: Source, known: Set<string>, ingest: (name: strin
     r.seen++;
     let bytes: Uint8Array; try { bytes = readFileSync(f); } catch (e) { r.errors.push(`${f}: ${(e as Error).message}`); continue; }
     const h = sha256(bytes); if (known.has(h)) { r.skipped++; continue; }
-    try { ingest(f.slice(src.path.length).replace(/^[\\/]/, ''), bytes); known.add(h); r.imported.push(f); } catch (e) { r.errors.push(`${f}: ${(e as Error).message}`); }
+    try { ingest(f.slice(src.path.length).replace(/^[\\/]/, ''), bytes); known.add(h); r.imported.push(f); } catch (e) { r.errors.push(`${f}: ${(e as Error).message}`); console.error(`watch: ${f}:`, (e as Error).stack?.split('\n').slice(0, 6).join('\n')); }
   }
   return r;
 }
