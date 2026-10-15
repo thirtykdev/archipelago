@@ -49,3 +49,49 @@ export function assertionId(subject: string, key: string, value: unknown, locato
 export function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
+
+// ---- connectors: live source in, observations out, read-only by type (ADR 0005) ----
+
+/** A native address inside one connector's world. Opaque to the core; the connector that emitted it can read it. */
+export type NativeRef = Record<string, string | number>;
+
+export interface Reading { ref: NativeRef; value: number | boolean | string | null; status: 'ok' | 'fault' | 'stale' | 'down'; at: Iso8601; source: string }
+
+export interface ConnectorDescriptor {
+  id: string;
+  label: string;
+  capabilities: { discover: boolean; read: boolean; subscribe: boolean; history: boolean; alarms: boolean; write: false };
+}
+
+export interface DiscoveredNode { ref: NativeRef; name: string; kind: PointKind | 'device'; units?: string; writable?: boolean }
+
+export interface Session {
+  discover(): AsyncIterable<DiscoveredNode>;
+  read(refs: NativeRef[]): Promise<Reading[]>;
+  subscribe(refs: NativeRef[], onReading: (r: Reading) => void): () => void;
+  health(): { connected: boolean; lastSeen?: Iso8601; backlog: number };
+  close(): Promise<void>;
+}
+
+export interface Connector {
+  describe(): ConnectorDescriptor;
+  open(config: unknown): Promise<Session>;
+}
+
+export const refKey = (ref: NativeRef): string => Object.keys(ref).sort().map((k) => `${k}=${ref[k]}`).join('|');
+
+// ---- correlation: two descriptions of the same equipment, matched on native identity (ADR 0007) ----
+
+export interface Describable { id: string; name: string; ref: NativeRef }
+export interface Correlation<A extends Describable, B extends Describable> {
+  matched: Array<{ a: A; b: B }>;
+  onlyA: A[];
+  onlyB: B[];
+}
+/** Match two lists on the same native identity. Pure; the key function says which fields identify an item. */
+export function correlate<A extends Describable, B extends Describable>(as: A[], bs: B[], key: (ref: NativeRef) => string = refKey): Correlation<A, B> {
+  const bi = new Map<string, B>(); for (const b of bs) bi.set(key(b.ref), b);
+  const matched: Array<{ a: A; b: B }> = []; const onlyA: A[] = [];
+  for (const a of as) { const b = bi.get(key(a.ref)); if (b) { matched.push({ a, b }); bi.delete(key(a.ref)); } else onlyA.push(a); }
+  return { matched, onlyA, onlyB: [...bi.values()] };
+}

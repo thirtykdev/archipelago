@@ -5,8 +5,15 @@
   "description": "An open-source, vendor-neutral building automation platform. The building has already been engineered. Why are we engineering it again?",
   "license": "AGPL-3.0-only",
   "type": "module",
-  "engines": { "node": ">=22" },
-  "workspaces": ["packages/*", "importers/*", "apps/*"],
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "importers/*",
+    "connectors/*",
+    "apps/*"
+  ],
   "scripts": {
     "test": "vitest run",
     "test:offline": "node scripts/offline-test.mjs",
@@ -14,7 +21,8 @@
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "check:fixtures": "node scripts/check-fixtures.mjs",
     "check": "npm run typecheck && npm run check:boundaries && npm run check:fixtures && npm test",
-    "archipelago": "tsx apps/cli/src/main.ts"
+    "archipelago": "tsx apps/cli/src/main.ts",
+    "fixtures": "tsx fixtures/synthetic/write.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

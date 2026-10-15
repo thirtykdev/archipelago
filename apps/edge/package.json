@@ -1,0 +1,1 @@
+{ "name": "@archipelago/edge", "version": "0.0.0", "private": true, "license": "AGPL-3.0-only", "type": "module", "exports": { ".": "./src/index.ts" }, "dependencies": { "@archipelago/core": "0.0.0", "@archipelago/importer-station-file": "0.0.0", "@archipelago/importer-controller-file": "0.0.0", "@archipelago/connector-simulated": "0.0.0" } }

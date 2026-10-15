@@ -12,27 +12,38 @@ Website: https://www.archipelago-project.org
 
 ## Status
 
-Early. Nothing is released. The first slice of code is here:
+Early. Nothing is released. What is here:
 
 ```
-packages/core             the assertion and provenance types everything else uses
-importers/station-file    a hardened reader for station backup files, with a vendor mapping
-apps/cli                  `archipelago inspect <file>`: what a backup contains, offline
-fixtures/synthetic        generated test stations and a hostile-file corpus
+packages/core              assertion and provenance types; the connector interface (read-only by type); correlation
+importers/station-file     hardened reader for station backup files (.bog, .dist) with a vendor mapping
+importers/controller-file  controller application files (.caf) and graphical controller files (.gfx)
+connectors/simulated       the first connector: invents labeled values for every native address, no building needed
+apps/edge                  Atoll, the local preview runtime: import, correlate, live values, web UI, in memory
+apps/cli                   `archipelago inspect <file>` and `archipelago serve [--simulate] [files...]`
+fixtures/synthetic         generated stations and controller files, and a hostile-file corpus
 ```
 
-`inspect` opens a `.bog` or `.dist` backup in memory, with caps on archive
-size and entry count, an XML reader that resolves nothing, and redaction of
-passwords before anything is printed. It prints devices, points, histories,
-alarms, links, native addresses it found, the types it did not understand,
-and what it redacted. It writes nothing and opens no socket.
+Import a station backup beside the controller files for the same job and
+Atoll correlates them by device instance and object identity: what is in
+both, what the controller exposes that the station never pulled in (kept
+with its native address, so a local Atoll can read it directly from the
+controller), and what the station has that the controller does not. Every
+fact is labeled imported, observed, simulated, or a question. Passwords are
+replaced before anything is shown. Nothing is written to disk and nothing
+leaves the machine.
+
+The controller-file importers are validated on synthetic fixtures only; they
+report what they do not understand instead of guessing.
 
 ```bash
 npm ci
-npm run archipelago -- inspect path/to/backup.dist
-npm run archipelago -- inspect path/to/config.bog --json
+npm run fixtures                                   # writes synthetic sample files to fixtures/synthetic/out
+npm run archipelago -- inspect fixtures/synthetic/out/site.dist
+npm run archipelago -- serve --simulate fixtures/synthetic/out/site.dist fixtures/synthetic/out/VAV_01.caf
+# open http://127.0.0.1:2865
 npm run check          # typecheck, boundary check, fixture check, tests
-npm run test:offline   # the test suite with the network turned off (Linux)
+npm run test:offline   # the suite in a container with no network
 ```
 
 ## Principles

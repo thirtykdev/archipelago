@@ -19,12 +19,22 @@
       ],
       "@archipelago/importer-station-file": [
         "importers/station-file/src/index.ts"
+      ],
+      "@archipelago/importer-controller-file": [
+        "importers/controller-file/src/index.ts"
+      ],
+      "@archipelago/connector-simulated": [
+        "connectors/simulated/src/index.ts"
+      ],
+      "@archipelago/edge": [
+        "apps/edge/src/index.ts"
       ]
     }
   },
   "include": [
     "packages/*/src",
     "importers/*/src",
+    "connectors/*/src",
     "apps/*/src",
     "fixtures/synthetic/*.ts"
   ]

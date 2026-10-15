@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Atoll · Archipelago preview</title>
+  <link rel="stylesheet" href="/app.css" />
+  <link rel="icon" href="/mark.svg" type="image/svg+xml" />
+</head>
+<body>
+  <div class="shell">
+    <nav class="rail" aria-label="Sections">
+      <div class="rail-brand"><img src="/mark.svg" alt="" width="22" height="22" /><span>Atoll</span><small>preview</small></div>
+      <a href="#overview" data-nav="overview" class="is-current"><span class="k">01</span>Overview</a>
+      <a href="#devices" data-nav="devices"><span class="k">02</span>Devices</a>
+      <a href="#points" data-nav="points"><span class="k">03</span>Points</a>
+      <a href="#controllers" data-nav="controllers"><span class="k">04</span>Controllers</a>
+      <a href="#questions" data-nav="questions"><span class="k">05</span>Questions <b class="count" data-qcount>0</b></a>
+      <a href="#artifacts" data-nav="artifacts"><span class="k">06</span>Artifacts</a>
+      <div class="rail-foot">
+        <div class="chip chip-local" title="Nothing leaves this machine">local only</div>
+        <div class="chip" data-conn>no connector</div>
+        <button type="button" class="theme" data-theme-toggle aria-label="Toggle theme">◐</button>
+      </div>
+    </nav>
+    <main class="content">
+      <header class="topbar">
+        <div class="crumbs"><span data-site>No station imported</span></div>
+        <div class="top-actions">
+          <label class="btn btn-primary file-btn">Import files<input type="file" multiple data-file-input /></label>
+          <button type="button" class="btn" data-reset>Reset</button>
+        </div>
+      </header>
+      <div class="drop" data-drop hidden><div>Drop station backups (.bog, .dist) and controller files (.caf, .gfx) here</div></div>
+      <section class="view" data-view="overview"></section>
+      <section class="view" data-view="devices" hidden></section>
+      <section class="view" data-view="points" hidden></section>
+      <section class="view" data-view="controllers" hidden></section>
+      <section class="view" data-view="questions" hidden></section>
+      <section class="view" data-view="artifacts" hidden></section>
+      <footer class="foot"><span>Atoll preview · in-memory · every fact labeled with its source</span><span data-status></span></footer>
+    </main>
+  </div>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

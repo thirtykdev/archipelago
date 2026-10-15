@@ -8,7 +8,9 @@ https://www.archipelago-project.org/roadmap/. In order:
 2. Station-backup importer and CLI: read a backup offline with hardened
    archive and XML handling; station graph with native addresses and
    redacted secrets; coverage report; hostile-file corpus; network-denied
-   tests. **This is the slice in the repository now.**
+   tests. In the repository, with the controller-file importers (`.caf`,
+   `.gfx`), correlation, a simulated connector and the Atoll preview
+   runtime. **This is where the repository is now.**
 3. Semantic engine, local runtime, BACnet/IP read-only connector, first
    release: equipment instances with provenance, questions, model-driven
    views, snapshot comparison and drift detection, web app, API, MCP tools,
